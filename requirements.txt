@@ -1,0 +1,11 @@
+beautifulsoup4
+emoji
+Flask
+httpx
+openai
+Pillow
+python-telegram-bot
+pytz
+rdkit
+replicate
+telegraph
