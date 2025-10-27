@@ -1482,21 +1482,33 @@ def main() -> None:
 
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Load config and schedule daily reminder
+# Load config for reminder time
     config = load_config()
     reminder_time_str = config.get("reminder_time", "04:00")
+
+    # --- Register ALL Handlers ---
+    handlers = [
+        # ... (Your list of CommandHandlers and MessageHandlers remains the same) ...
+        MessageHandler(filters.TEXT & ~filters.COMMAND, master_text_handler)
+    ]
+    application.add_handlers(handlers)
+
+    # --- Schedule Daily Reminder (AFTER application is built) ---
     try:
         hour, minute = map(int, reminder_time_str.split(':'))
+        # Access job_queue AFTER application is built and handlers are added
         job_queue = application.job_queue
         reminder_time = time(hour=hour, minute=minute, tzinfo=pytz.timezone('Asia/Kolkata'))
-        # Add the job if it doesn't exist already (e.g., after restart)
+        # Add the job if it doesn't exist already
         if not job_queue.get_jobs_by_name("daily_reminder"):
             job_queue.run_daily(send_daily_reminder, time=reminder_time, name="daily_reminder")
             logger.info(f"Daily reminder job scheduled for {reminder_time_str} IST.")
         else:
-             logger.info("Daily reminder job already scheduled.")
+            logger.info("Daily reminder job already scheduled.")
     except ValueError:
-        logger.error(f"Invalid reminder time format in config: {reminder_time_str}. Reminder not scheduled.")
+        logger.error(f"Invalid reminder time format: {reminder_time_str}. Reminder not scheduled.")
+    except Exception as e:
+        logger.error(f"Error scheduling daily reminder: {e}") # Catch other potential errors
 
     # --- Register ALL Handlers ---
     handlers = [
