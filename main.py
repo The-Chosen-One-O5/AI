@@ -231,9 +231,9 @@ async def generate_video_from_text(prompt: str) -> bytes | None:
     
     # Try different possible endpoint formats
     api_urls = [
-        "https://samuraiapi.in/v1/videos/generations",
-        "https://samuraiapi.in/videos/generations",
-        "https://api.samuraiapi.in/v1/videos/generations"
+        "https://samuraiapi.in/v1/videos",
+        "https://samuraiapi.in/videos",
+        "https://amuraiapi.in/v1/videos/generations"
     ]
     
     headers = {
