@@ -593,55 +593,89 @@ async def scrape_url_content(url: str) -> str | None:
         logger.error(f"Failed to scrape URL {url}: {e}")
         return None
 
-async def get_image_bytes_from_prompt(prompt: str) -> bytes | None:
-    # Example using a placeholder API URL and Key - Replace if you have one
-    # api_url = "YOUR_IMAGE_API_URL"
-    # api_key = os.environ.get("YOUR_IMAGE_API_KEY")
-    # if not api_key: logger.error("Image API key not set."); return None
-    # headers = {"Authorization": f"Bearer {api_key}", ... }
-    # payload = {"prompt": prompt, ... }
-    # Using a known free/test endpoint for now
-    api_url = "https://api.infip.pro/v1/images/generations"
-    headers = {"Authorization": "Bearer infip-60b6cdd9", "Content-Type": "application/json"}
-    payload = {"prompt": prompt, "model": "Qwen", "n": 1, "size": "512x512"} # Sticker size
-    try:
-        logger.info(f"Requesting image generation for: {prompt}")
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(api_url, headers=headers, json=payload)
-            if response.status_code != 200:
-                 logger.error(f"Image generation API error: {response.status_code} - {response.text}")
-                 return None
-            result_data = response.json().get("data")
-            if not result_data or not isinstance(result_data, list) or not result_data[0].get("url"):
-                 logger.error("Image API response malformed or missing URL.")
-                 return None
-            image_url = result_data[0]["url"]
+async def generate_sticker_image(prompt: str) -> bytes | None:
+    """Generates an image for sticker using Samurai API with Qwen models."""
+    if not SAMURAI_API_KEY:
+        logger.error("Samurai API key not configured. Cannot generate sticker image.")
+        return None
 
-            # Download the image
-            logger.info(f"Downloading generated image from: {image_url}")
-            image_response = await client.get(image_url, timeout=60.0)
-            image_response.raise_for_status()
-            logger.info("Image downloaded successfully.")
-            return image_response.content
-    except Exception as e:
-        logger.error(f"Failed to get image bytes for sticker: {e}")
+    logger.info(f"Generating sticker image with Samurai API for prompt: {prompt}")
+    
+    # Try primary model first, then fallback
+    models = ["free/qwen-qwen-image", "free/qwen-qwen-image/p-2"]
+    
+    for model in models:
+        try:
+            api_url = "https://samuraiapi.in/v1/images/generations"
+            headers = {
+                "Authorization": f"Bearer {SAMURAI_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": model,
+                "prompt": prompt,
+                "n": 1,
+                "size": "1024x1024"
+            }
+
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                response = await client.post(api_url, headers=headers, json=payload)
+
+                if response.status_code != 200:
+                    logger.warning(f"Samurai API error with model {model}: {response.status_code} - {response.text}")
+                    continue  # Try fallback model
+
+                result_data = response.json().get("data")
+                if result_data and isinstance(result_data, list) and result_data[0].get("url"):
+                    image_url = result_data[0]["url"]
+                    logger.info(f"Downloading generated image from: {image_url}")
+
+                    # Download the image
+                    image_response = await client.get(image_url, timeout=120.0)
+                    image_response.raise_for_status()
+                    logger.info(f"Image downloaded successfully using model {model}.")
+                    return image_response.content
+                else:
+                    logger.warning(f"Model {model} response did not contain expected URL: {response.json()}")
+                    continue  # Try fallback model
+
+        except httpx.TimeoutException:
+            logger.warning(f"Samurai API timed out with model {model}. Trying fallback...")
+            continue
+        except Exception as e:
+            logger.warning(f"Failed to generate image with model {model}: {e}")
+            continue
+    
+    # All models failed
+    logger.error("All Samurai API models failed for sticker generation.")
     return None
 
-def process_image_for_sticker(image_bytes: bytes) -> io.BytesIO | None:
+async def convert_to_sticker(image_bytes: bytes) -> bytes | None:
+    """Converts an image to sticker format (512x512 WebP)."""
     try:
-        with Image.open(io.BytesIO(image_bytes)) as img:
-            # Ensure image is within 512x512, preserving aspect ratio
-            img.thumbnail((512, 512))
-            sticker_buffer = io.BytesIO()
-            # Convert to RGBA first if needed by WEBP encoder, handle potential errors
-            if img.mode != 'RGBA':
-                img = img.convert('RGBA')
-            img.save(sticker_buffer, 'WEBP', lossless=True) # Use lossless for stickers
-            sticker_buffer.seek(0)
-            logger.info("Image successfully processed into WEBP sticker format.")
-            return sticker_buffer
+        from PIL import Image
+        import io
+        
+        # Open the image
+        img = Image.open(io.BytesIO(image_bytes))
+        
+        # Convert to RGBA if needed
+        if img.mode != 'RGBA':
+            img = img.convert('RGBA')
+        
+        # Resize to 512x512 (Telegram sticker requirement)
+        img = img.resize((512, 512), Image.Resampling.LANCZOS)
+        
+        # Save as WebP
+        output = io.BytesIO()
+        img.save(output, format='WEBP')
+        output.seek(0)
+        
+        logger.info("Image converted to sticker format successfully.")
+        return output.read()
+        
     except Exception as e:
-        logger.error(f"Could not process image for sticker: {e}")
+        logger.error(f"Failed to convert image to sticker format: {e}", exc_info=True)
         return None
 
 async def get_emoji_reaction(message_text: str) -> str | None:
@@ -949,27 +983,54 @@ async def smart_ai_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         # Sticker creation command
         if "sticker of" in prompt.lower():
-            sticker_prompt = re.sub(r'(?i)make a sticker of\s*|sticker of\s*', '', prompt).strip()
+            sticker_prompt = re.sub(r'(?i)sticker of\s*', '', prompt).strip()
             if not sticker_prompt:
-                 await context.bot.edit_message_text("What kind of sticker? `/ai sticker of a happy cat`", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
-                 return
-            await context.bot.edit_message_text(f"🎨 Creating sticker of `{sticker_prompt}`...", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
-            image_bytes = await get_image_bytes_from_prompt(sticker_prompt)
+                await context.bot.edit_message_text("What kind of sticker? Usage: `/ai sticker of a happy cat`", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
+                return
+
+            await context.bot.edit_message_text(f"🎨 Creating sticker: `{sticker_prompt}`...", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
+            
+            # Generate image using Samurai API
+            image_bytes = await generate_sticker_image(sticker_prompt)
+            
             if image_bytes:
-                sticker_file = process_image_for_sticker(image_bytes)
-                if sticker_file:
+                # Convert to sticker format
+                sticker_bytes = await convert_to_sticker(image_bytes)
+                
+                if sticker_bytes:
                     try:
-                        await context.bot.send_sticker(chat_id=update.effective_chat.id, sticker=sticker_file)
+                        await context.bot.send_sticker(
+                            chat_id=update.effective_chat.id, 
+                            sticker=sticker_bytes
+                        )
                         await thinking_message.delete()
                     except BadRequest as e:
                         logger.error(f"Failed to send sticker: {e}")
-                        await context.bot.edit_message_text(f"Failed to send sticker: {e.message}", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
-                    return # Sticker sent or failed sending
+                        await context.bot.edit_message_text(
+                            f"Failed to send sticker: {e.message}", 
+                            chat_id=update.effective_chat.id, 
+                            message_id=thinking_message.message_id
+                        )
+                    except Exception as e:
+                        logger.error(f"Unexpected error sending sticker: {e}")
+                        await context.bot.edit_message_text(
+                            "An unexpected error occurred sending the sticker.", 
+                            chat_id=update.effective_chat.id, 
+                            message_id=thinking_message.message_id
+                        )
                 else:
-                     await context.bot.edit_message_text("Couldn't process the image into a sticker.", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
+                    await context.bot.edit_message_text(
+                        "Failed to convert image to sticker format.", 
+                        chat_id=update.effective_chat.id, 
+                        message_id=thinking_message.message_id
+                    )
             else:
-                 await context.bot.edit_message_text("Failed to generate an image for the sticker.", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
-            return # Sticker generation finished (success or fail)
+                await context.bot.edit_message_text(
+                    "Failed to generate the sticker image.", 
+                    chat_id=update.effective_chat.id, 
+                    message_id=thinking_message.message_id
+                )
+            return  # Sticker generation finished
         
         # --- NEW: Video Generation Command ---
         if "video of" in prompt.lower() or "make a video of" in prompt.lower():
