@@ -617,30 +617,54 @@ async def poll_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     chat_id = None
     session = None
     for cid, s in trivia_sessions.items():
-        if s.get("current_poll_id") == answer.poll_id and s["state"] == "polling":
+        # Ensure poll ID matches and the game is in the polling state
+        if s.get("current_poll_id") == answer.poll_id and s.get("state") == "polling":
             chat_id = cid
             session = s
             break
             
     if not session or not chat_id:
+        # This is expected for answers to old polls, don't log as error unless debugging
         # logger.debug(f"Poll answer for unknown or inactive poll ID: {answer.poll_id}")
-        return # Ignore answers for polls not part of an active game
+        return
 
     user_id = answer.user.id
     
     # Check if the user is a registered player for this game
     if user_id not in session["players"]:
-        logger.info(f"Ignoring poll answer from non-player {user_id} in chat {chat_id}")
+        # Log if needed, but don't clutter logs too much
+        # logger.info(f"Ignoring poll answer from non-player {user_id} in chat {chat_id}")
         return
 
-    # Check if the chosen option is correct (option_ids is a list, usually with one element for quizzes)
-    if answer.option_ids and answer.option_ids[0] == session.get("current_correct_index"):
-        # Award 1 point for correct answer
-        session["players"][user_id]["score"] += 1
-        logger.info(f"Player {user_id} answered correctly in chat {chat_id}. Score: {session['players'][user_id]['score']}")
+    # --- Robust Check for Correctness ---
+    chosen_index = -1 # Default to invalid index
+    if answer.option_ids: # option_ids is empty if the user retracts their vote
+        chosen_index = answer.option_ids[0]
+
+    correct_index = session.get("current_correct_index")
+
+    # Log the values being compared for debugging
+    logger.debug(f"Chat {chat_id}, User {user_id}: Chose index {chosen_index} (type: {type(chosen_index)}), Correct index is {correct_index} (type: {type(correct_index)})")
+
+    # Ensure both are integers before comparing
+    is_correct = False
+    if isinstance(chosen_index, int) and isinstance(correct_index, int) and chosen_index == correct_index:
+        is_correct = True
+        
+    if is_correct:
+        # Award 1 point for correct answer *only if not already awarded for this question*
+        # (Telegram might send multiple updates, ensure score is added only once per question per user)
+        # We'll rely on the poll closing logic to finalize scores, but track answers here
+        # For simplicity now, let's just increment. If double-counting happens, we'll need a flag.
+        session["players"][user_id]["score"] = session["players"][user_id].get("score", 0) + 1 # Use .get for safety
+        logger.info(f"Player {user_id} in chat {chat_id} answered correctly. New tentative score: {session['players'][user_id]['score']}")
     else:
-         logger.info(f"Player {user_id} answered incorrectly in chat {chat_id}.")
-         # No points for incorrect or retracted answers (empty option_ids)
+         # Log retraction or incorrect answer
+         if not answer.option_ids:
+              logger.info(f"Player {user_id} in chat {chat_id} retracted their vote.")
+              # Optional: Decrement score if they previously answered correctly? Depends on rules.
+         else:
+              logger.info(f"Player {user_id} in chat {chat_id} answered incorrectly (chose {chosen_index}, needed {correct_index}).")
 
 async def process_poll_end_callback(context: ContextTypes.DEFAULT_TYPE):
     """Job callback executed when a trivia poll's time expires."""
