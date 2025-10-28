@@ -25,7 +25,7 @@ from PIL import Image
 from bs4 import BeautifulSoup
 from telegraph import Telegraph
 from telegram import Update, ChatPermissions, InputFile, ReactionTypeEmoji
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import Application, CommandHandler, MessageHandler, PollAnswerHandler, ContextTypes, filters
 from telegram.error import BadRequest
 from flask import Flask # Needed for keep_alive
 
