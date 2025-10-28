@@ -1,6 +1,8 @@
 beautifulsoup4
+cerebras-cloud-sdk
 emoji
 Flask
+groq
 httpx
 openai
 Pillow

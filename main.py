@@ -17,6 +17,8 @@ from threading import Thread # Needed for keep_alive
 import replicate
 import emoji
 from openai import AsyncOpenAI, OpenAIError
+from cerebras.cloud.sdk import Cerebras
+from groq import AsyncGroq
 from rdkit import Chem
 from rdkit.Chem.Draw import rdMolDraw2D
 from PIL import Image
@@ -302,33 +304,6 @@ async def is_user_admin(chat_id: int, user_id: int, context: ContextTypes.DEFAUL
         return False
 
 # --- AI API Call Chain ---
-async def get_typegpt_response(messages: list) -> str | None:
-    # --- FULL FALLBACK CHAIN ---
-    logger.info("--- Starting AI Fallback Chain ---")
-
-    # 1. Primary: OpenRouter (Deepseek)
-    if OPENROUTER_API_KEY:
-        response = await call_openrouter_api(messages)
-        if response: logger.info("--- Chain Success: OpenRouter ---"); return response
-    else: logger.warning("OpenRouter API Key not set, skipping.")
-
-    # 2. Fallback 1: Grok
-    if GROK_API_KEY:
-        logger.warning("--- OpenRouter failed. Trying Grok ---")
-        response = await call_grok_api(messages)
-        if response: logger.info("--- Chain Success: Grok ---"); return response
-    else: logger.warning("Grok API Key not set, skipping.")
-
-    # 3. Fallback 2: ChatAnywhere (Example)
-    if CHATANYWHERE_API_KEY:
-        logger.warning("--- Grok failed. Trying ChatAnywhere ---")
-        response = await call_chatanywhere_api(messages) # Ensure this function is defined
-        if response: logger.info("--- Chain Success: ChatAnywhere ---"); return response
-    else: logger.warning("ChatAnywhere API Key not set, skipping.")
-
-    logger.error("--- All available APIs in the fallback chain failed. ---")
-    return None
-
 async def call_cerebras_api(messages: list) -> str | None:
     """PRIMARY API: Cerebras Model (Direct SDK)."""
     if not CEREBRAS_API_KEY:
@@ -336,18 +311,17 @@ async def call_cerebras_api(messages: list) -> str | None:
         return None
     logger.info("Trying Primary API: Cerebras Direct")
 
-    # Adapt messages format if needed by Cerebras SDK (assuming OpenAI format works)
-    # The example uses stream=True, we need to collect the full response
+    # Cerebras SDK uses OpenAI-compatible format
     try:
-        client = CerebrasClient(api_key=CEREBRAS_API_KEY)
+        client = Cerebras(api_key=CEREBRAS_API_KEY)
 
         # Run the blocking SDK call in a separate thread
         def run_cerebras_sync():
             stream = client.chat.completions.create(
                 messages=messages,
-                model="qwen-3-235b-a22b-instruct-2507", # Your specified model
+                model="llama3.1-70b", # Using available Cerebras model
                 stream=True,
-                max_tokens=20000, # Renamed from max_completion_tokens based on OpenAI standard
+                max_tokens=8000,
                 temperature=0.7,
                 top_p=0.8
             )
@@ -361,6 +335,7 @@ async def call_cerebras_api(messages: list) -> str | None:
         response_content = await asyncio.to_thread(run_cerebras_sync)
 
         if response_content:
+            logger.info(f"Cerebras API returned response: {len(response_content)} chars")
             return response_content.strip()
         else:
             logger.warning("Cerebras API returned empty content.")
@@ -378,23 +353,21 @@ async def call_groq_lpu_api(messages: list) -> str | None:
     logger.warning("--- Cerebras failed. Trying Groq LPU Direct ---")
 
     try:
-        client = OpenAIClient_ForGroq.AsyncOpenAI( # Use the Async client
-            base_url="https://api.groq.com/openai/v1",
-            api_key=GROQ_API_KEY
-        )
+        client = AsyncGroq(api_key=GROQ_API_KEY)
 
         chat_completion = await client.chat.completions.create(
             messages=messages,
             # Choose a model available on Groq, e.g., Llama3
-            model="llama3-70b-8192", # Or llama3-8b-8192, mixtral-8x7b-32768
+            model="llama-3.1-70b-versatile", # Updated to current available Groq model
             temperature=0.7,
-            max_tokens=4096, # Adjust as needed
+            max_tokens=4096,
             top_p=0.8,
             stream=False # Get the full response at once
         )
 
         response_content = chat_completion.choices[0].message.content
         if response_content:
+            logger.info(f"Groq API returned response: {len(response_content)} chars")
             return response_content.strip()
         else:
             logger.warning("Groq API returned empty content.")
@@ -404,19 +377,26 @@ async def call_groq_lpu_api(messages: list) -> str | None:
         logger.warning(f"Groq API failed with exception: {e}", exc_info=True)
         return None
 
-async def call_chatanywhere_api(messages: list) -> str | None: # Example fallback
-    if not CHATANYWHERE_API_KEY: return None
+async def call_chatanywhere_api(messages: list) -> str | None:
+    """FALLBACK 2: ChatAnywhere API."""
+    if not CHATANYWHERE_API_KEY:
+        logger.warning("ChatAnywhere API Key not set, skipping.")
+        return None
+    
     api_url = "https://api.chatanywhere.tech/v1/chat/completions"
     headers = {"Authorization": f"Bearer {CHATANYWHERE_API_KEY}", "Content-Type": "application/json"}
-    payload = {"model": "gpt-5-2025-08-07", "messages": messages, "max_tokens": 4096}
+    payload = {"model": "gpt-4o-mini", "messages": messages, "max_tokens": 4096}
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(api_url, headers=headers, json=payload)
             if response.status_code == 200:
-                return response.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+                response_content = response.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+                if response_content:
+                    logger.info(f"ChatAnywhere API returned response: {len(response_content)} chars")
+                    return response_content
             logger.warning(f"ChatAnywhere API failed with status {response.status_code}: {response.text}")
     except Exception as e:
-        logger.warning(f"ChatAnywhere API failed: {e}")
+        logger.warning(f"ChatAnywhere API failed with exception: {e}", exc_info=True)
     return None
 async def get_typegpt_response(messages: list) -> str | None:
     # --- FULL FALLBACK CHAIN ---
@@ -441,6 +421,9 @@ async def get_typegpt_response(messages: list) -> str | None:
         response = await call_chatanywhere_api(messages) # Ensure this function exists & is defined
         if response: logger.info("--- Chain Success: ChatAnywhere ---"); return response
     else: logger.warning("ChatAnywhere API Key not set, skipping.")
+
+    logger.error("--- All available APIs in the fallback chain failed. ---")
+    return None
 
 async def get_typegpt_gemini_vision_response(messages: list) -> str | None:
     if not TYPEGPT_FAST_API_KEY: return None
