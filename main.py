@@ -618,7 +618,7 @@ async def generate_sticker_image(prompt: str) -> bytes | None:
     # Try different endpoint formats
     api_urls = [
         "https://samuraiapi.in/v1/images/generations",
-        "https://samuraiapi.in/images/generations",
+        "https://samuraiapi.in/v1/image/generations",
         "https://api.samuraiapi.in/v1/images/generations"
     ]
     
