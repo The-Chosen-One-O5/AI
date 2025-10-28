@@ -55,7 +55,8 @@
 
 4. Fixed `call_groq_lpu_api()`:
    - Changed from `OpenAIClient_ForGroq.AsyncOpenAI` to `AsyncGroq`
-   - Updated model to `llama-3.1-70b-versatile`
+   - Updated model to `openai/gpt-oss-120b` (replaced deprecated `llama-3.1-70b-versatile`)
+   - Added specific error handling for BadRequestError (deprecated models)
    - Added detailed logging
 
 5. Improved `call_chatanywhere_api()`:
@@ -86,7 +87,7 @@
 2. **Test API Endpoints**: Send test requests to verify:
    - Cerebras API is accessible and key is valid
    - Groq API is accessible and key is valid
-   - Models are available: `llama3.1-70b` (Cerebras), `llama-3.1-70b-versatile` (Groq)
+   - Models are available: `llama3.1-70b` (Cerebras), `openai/gpt-oss-120b` (Groq)
 
 3. **Monitor Logs**: Check for:
    - "--- Starting AI Fallback Chain ---"
@@ -111,3 +112,26 @@
    - Returns error if all fail
 4. Logs each step clearly
 5. Returns AI response to user or error message
+
+## Recent Updates (Model Deprecation Fix)
+
+### Groq Model Update (2024)
+- **Problem**: Groq deprecated `llama-3.1-70b-versatile` model causing 400 BadRequest errors
+- **Solution**: Updated to `openai/gpt-oss-120b` model
+- **Changes**:
+  1. Updated model name in `call_groq_lpu_api()` (line 369)
+  2. Added specific error handling for `BadRequestError` to catch deprecated model errors
+  3. Improved error messages for users when all providers fail
+  4. Added model configuration documentation section in main.py (lines 65-84)
+  5. Enhanced error handling across all API functions:
+     - Cerebras: Added OpenAIError catching
+     - Groq: Added BadRequestError catching
+     - ChatAnywhere: Added httpx timeout and request error handling
+  6. Updated user-facing error messages to be more informative
+
+### Error Handling Improvements
+- All API functions now have specific exception handling
+- Better logging with error types (BadRequest, Timeout, Network errors)
+- User-friendly error messages when all providers fail
+- Bot no longer crashes when APIs are unavailable
+- Fallback chain continues gracefully through failures

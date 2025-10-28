@@ -59,10 +59,30 @@ BRAVE_API_KEY = os.environ.get('BRAVE_API_KEY')
 GROK_API_KEY = os.environ.get('GROK_API_KEY')
 OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY')
 REPLICATE_API_KEY = os.environ.get('REPLICATE_API_KEY')
-# Assuming you access Cerebras via OpenRouter or similar provider
-# --- NEW API KEYS ---
-CEREBRAS_API_KEY = os.environ.get('CEREBRAS_API_KEY') # Direct Cerebras Key
-GROQ_API_KEY = os.environ.get('GROQ_API_KEY')         # Direct Groq Key
+CEREBRAS_API_KEY = os.environ.get('CEREBRAS_API_KEY')
+GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
+
+# --- AI MODEL CONFIGURATION ---
+# Models used by the bot (for easy reference and updates):
+# 
+# Primary LLM Chain (Cerebras → Groq → ChatAnywhere):
+#   1. Cerebras: llama3.1-70b
+#   2. Groq: openai/gpt-oss-120b
+#   3. ChatAnywhere: gpt-4o-mini
+#
+# Vision Models:
+#   - TypeGPT Fast: gemini-2.5-pro
+#   - OpenRouter: moonshotai/kimi-vl-a3b-thinking:free
+#
+# Audio/TTS:
+#   - Replicate: minimax/speech-02-hd
+#
+# Image Generation:
+#   - Infip API: Qwen model
+#
+# Note: Update these models in their respective functions if providers deprecate them.
+# Check deprecation notices: https://console.groq.com/docs/deprecations
+
 # Exit if essential token is missing
 if not BOT_TOKEN:
     print("FATAL ERROR: BOT_TOKEN environment variable not set!")
@@ -231,7 +251,15 @@ def create_telegraph_page(title: str, content: str, config: dict) -> str | None:
 async def send_final_response(update: Update, context: ContextTypes.DEFAULT_TYPE, response_text: str | None, thinking_message, prompt_title: str):
     if not response_text:
         try:
-            await context.bot.edit_message_text("Sorry, I couldn't get a response.", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
+            error_message = (
+                "Sorry, I couldn't get a response right now. All AI providers are unavailable.\n"
+                "This might be due to:\n"
+                "• API rate limits\n"
+                "• Model deprecation or maintenance\n"
+                "• Network issues\n\n"
+                "Please try again in a few moments."
+            )
+            await context.bot.edit_message_text(error_message, chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
         except BadRequest: pass # Ignore if original message deleted
         return
 
@@ -311,7 +339,6 @@ async def call_cerebras_api(messages: list) -> str | None:
         return None
     logger.info("Trying Primary API: Cerebras Direct")
 
-    # Cerebras SDK uses OpenAI-compatible format
     try:
         client = Cerebras(api_key=CEREBRAS_API_KEY)
 
@@ -319,7 +346,7 @@ async def call_cerebras_api(messages: list) -> str | None:
         def run_cerebras_sync():
             stream = client.chat.completions.create(
                 messages=messages,
-                model="llama3.1-70b", # Using available Cerebras model
+                model="llama3.1-70b",
                 stream=True,
                 max_tokens=8000,
                 temperature=0.7,
@@ -341,6 +368,9 @@ async def call_cerebras_api(messages: list) -> str | None:
             logger.warning("Cerebras API returned empty content.")
             return None
 
+    except OpenAIError as e:
+        logger.error(f"Cerebras API OpenAI-compatible error: {e}")
+        return None
     except Exception as e:
         logger.warning(f"Cerebras API failed with exception: {e}", exc_info=True)
         return None
@@ -353,12 +383,12 @@ async def call_groq_lpu_api(messages: list) -> str | None:
     logger.warning("--- Cerebras failed. Trying Groq LPU Direct ---")
 
     try:
+        from groq import BadRequestError
         client = AsyncGroq(api_key=GROQ_API_KEY)
 
         chat_completion = await client.chat.completions.create(
             messages=messages,
-            # Choose a model available on Groq, e.g., Llama3
-            model="llama-3.1-70b-versatile", # Updated to current available Groq model
+            model="openai/gpt-oss-120b",
             temperature=0.7,
             max_tokens=4096,
             top_p=0.8,
@@ -373,6 +403,9 @@ async def call_groq_lpu_api(messages: list) -> str | None:
             logger.warning("Groq API returned empty content.")
             return None
 
+    except BadRequestError as e:
+        logger.error(f"Groq API BadRequestError (possibly deprecated model): {e}")
+        return None
     except Exception as e:
         logger.warning(f"Groq API failed with exception: {e}", exc_info=True)
         return None
@@ -394,7 +427,14 @@ async def call_chatanywhere_api(messages: list) -> str | None:
                 if response_content:
                     logger.info(f"ChatAnywhere API returned response: {len(response_content)} chars")
                     return response_content
-            logger.warning(f"ChatAnywhere API failed with status {response.status_code}: {response.text}")
+            elif response.status_code == 400:
+                logger.error(f"ChatAnywhere API BadRequest (possibly deprecated model): {response.text}")
+            else:
+                logger.warning(f"ChatAnywhere API failed with status {response.status_code}: {response.text}")
+    except httpx.TimeoutException:
+        logger.warning("ChatAnywhere API request timed out")
+    except httpx.RequestError as e:
+        logger.warning(f"ChatAnywhere API network error: {e}")
     except Exception as e:
         logger.warning(f"ChatAnywhere API failed with exception: {e}", exc_info=True)
     return None
