@@ -61,6 +61,7 @@ OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY')
 REPLICATE_API_KEY = os.environ.get('REPLICATE_API_KEY')
 CEREBRAS_API_KEY = os.environ.get('CEREBRAS_API_KEY')
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
+SAMURAI_API_KEY = os.environ.get('SAMURAI_API_KEY') # New key for Text-to-Video
 
 # --- AI MODEL CONFIGURATION ---
 # Models used by the bot (for easy reference and updates):
@@ -218,6 +219,58 @@ async def generate_audio_from_text(text: str) -> bytes | None:
                 return None
     except Exception as e:
         logger.error(f"Failed to generate audio with Replicate: {e}")
+        return None
+
+async def generate_video_from_text(prompt: str) -> bytes | None:
+    """Generates video from text using the Samurai API."""
+    if not SAMURAI_API_KEY:
+        logger.error("Samurai API key not configured. Cannot generate video.")
+        return None
+
+    logger.info(f"Generating video with Samurai API for prompt: {prompt}")
+    # Assuming an OpenAI-compatible endpoint and payload structure
+    api_url = "https://samuraiapi.in/v1/videos/generations" # Assumed endpoint
+    headers = {
+        "Authorization": f"Bearer {SAMURAI_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "wan-ai-wan2.1-t2v-14b",
+        "prompt": prompt,
+        "n": 1, # Request one video
+        # Add other parameters like size, fps, etc., if supported by the API
+        # "size": "1024x576",
+        # "fps": 24
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=300.0) as client: # Longer timeout for video
+            response = await client.post(api_url, headers=headers, json=payload)
+
+            if response.status_code != 200:
+                logger.error(f"Samurai Video API error: {response.status_code} - {response.text}")
+                return None
+
+            result_data = response.json().get("data")
+            # Assuming the response structure is similar to OpenAI's image gen, returning a URL
+            if result_data and isinstance(result_data, list) and result_data[0].get("url"):
+                video_url = result_data[0]["url"]
+                logger.info(f"Downloading generated video from: {video_url}")
+
+                # Download the video file
+                video_response = await client.get(video_url, timeout=300.0) # Long timeout for download
+                video_response.raise_for_status() # Check for download errors
+                logger.info("Video downloaded successfully.")
+                return video_response.content
+            else:
+                logger.error(f"Samurai Video API response did not contain expected URL: {response.json()}")
+                return None
+
+    except httpx.TimeoutException:
+        logger.error("Samurai Video API timed out.")
+        return None
+    except Exception as e:
+        logger.error(f"Failed to generate video with Samurai API: {e}", exc_info=True)
         return None
 
 def create_telegraph_page(title: str, content: str, config: dict) -> str | None:
@@ -918,6 +971,31 @@ async def smart_ai_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                  await context.bot.edit_message_text("Failed to generate an image for the sticker.", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
             return # Sticker generation finished (success or fail)
         
+        # --- NEW: Video Generation Command ---
+        if "video of" in prompt.lower() or "make a video of" in prompt.lower():
+            video_prompt = re.sub(r'(?i)(make a )?video of\s*', '', prompt).strip()
+            if not video_prompt:
+                await context.bot.edit_message_text("What kind of video? Usage: `/ai video of a cat chasing a laser`", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
+                return
+
+            await context.bot.edit_message_text(f"🎬 Generating video: `{video_prompt}` (This may take a while)...", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
+            video_bytes = await generate_video_from_text(video_prompt)
+
+            if video_bytes:
+                try:
+                    # Sending the video
+                    await context.bot.send_video(chat_id=update.effective_chat.id, video=video_bytes, caption=f"🎥 Video for: `{video_prompt}`", read_timeout=300, write_timeout=300, connect_timeout=300) # Add timeouts
+                    await thinking_message.delete()
+                except BadRequest as e:
+                    logger.error(f"Failed to send video: {e}")
+                    await context.bot.edit_message_text(f"Failed to send video: {e.message}", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
+                except Exception as e:
+                     logger.error(f"Unexpected error sending video: {e}")
+                     await context.bot.edit_message_text("An unexpected error occurred sending the video.", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
+            else:
+                await context.bot.edit_message_text("Failed to generate the video.", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
+            return # Video generation finished
+        
         # Default action: Web Search + AI Answer
         await context.bot.edit_message_text("🔎 Searching the web...", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
         search_results = await execute_web_search(prompt)
@@ -1128,6 +1206,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`remember this` (Reply to msg) - Save a message to gossip memory\n"
         "`gossip` - Recall a random saved message\n"
         "`sticker of [prompt]` - Create an AI sticker\n"
+        "`video of [prompt]` - Create an AI video (Experimental)\n"
         "`[Your question]` - Get AI answer (uses web search by default)\n\n"
         "**Other Commands**\n"
         "`/audio` - Toggle voice responses ON/OFF (Admin)\n"
