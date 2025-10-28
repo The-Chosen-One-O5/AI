@@ -610,55 +610,101 @@ async def get_emoji_reaction(message_text: str) -> str | None:
     return None
 
 # --- Trivia System ---
+async def poll_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles user answers to the bot's trivia quiz polls."""
+    answer = update.poll_answer
+    # Find the chat session associated with this poll ID
+    chat_id = None
+    session = None
+    for cid, s in trivia_sessions.items():
+        if s.get("current_poll_id") == answer.poll_id and s["state"] == "polling":
+            chat_id = cid
+            session = s
+            break
+            
+    if not session or not chat_id:
+        # logger.debug(f"Poll answer for unknown or inactive poll ID: {answer.poll_id}")
+        return # Ignore answers for polls not part of an active game
 
-async def judge_answers_batch(context: ContextTypes.DEFAULT_TYPE, correct_answer: str, player_answers: dict) -> dict[int, bool]:
-    if not player_answers: return {}
-    prompt = (
-        f"You are a strict but fair trivia judge. The correct answer is: **{correct_answer}**\n\n"
-        f"Judge these player answers. Accept minor typos, abbreviations, or correct alternate phrasings (e.g., 'Al' for 'Aluminium', 'USA' for 'United States'). "
-        f"Respond with ONLY a JSON object with user IDs as keys and a boolean `true` (correct) or `false` (incorrect) as the value.\n\n"
-        f"Player Answers:\n{json.dumps(player_answers, indent=2)}" # Ensure answers dict is JSON serializable
-    )
-    response_text = await get_typegpt_response([{"role": "system", "content": prompt}])
-    try:
-        # Be more robust in finding the JSON
-        json_match = re.search(r'\{[\s\S]*\}', response_text) # Find JSON block
-        if json_match:
-            results_str = json_match.group(0)
-            judged_results = json.loads(results_str)
-            return {int(k): v for k, v in judged_results.items() if isinstance(v, bool)} # Ensure keys are int, values are bool
-        else:
-             logger.error(f"No valid JSON found in judge response: {response_text}")
-    except (json.JSONDecodeError, TypeError, ValueError) as e:
-        logger.error(f"Failed to parse judged answers from AI: {e}\nResponse: {response_text}")
-    # Fallback to strict checking if AI fails or response is bad
-    logger.warning("Falling back to strict answer checking.")
-    return {uid: (str(ans).strip().lower() == correct_answer.lower()) for uid, ans in player_answers.items()}
+    user_id = answer.user.id
+    
+    # Check if the user is a registered player for this game
+    if user_id not in session["players"]:
+        logger.info(f"Ignoring poll answer from non-player {user_id} in chat {chat_id}")
+        return
 
-async def get_new_trivia_question(context: ContextTypes.DEFAULT_TYPE, topic: str, asked_questions: list) -> tuple[str, str] | None:
-    history_prompt = f"Do NOT repeat these questions: {', '.join(asked_questions)}\n\n" if asked_questions else ""
+    # Check if the chosen option is correct (option_ids is a list, usually with one element for quizzes)
+    if answer.option_ids and answer.option_ids[0] == session.get("current_correct_index"):
+        # Award 1 point for correct answer
+        session["players"][user_id]["score"] += 1
+        logger.info(f"Player {user_id} answered correctly in chat {chat_id}. Score: {session['players'][user_id]['score']}")
+    else:
+         logger.info(f"Player {user_id} answered incorrectly in chat {chat_id}.")
+         # No points for incorrect or retracted answers (empty option_ids)
+
+async def process_poll_end_callback(context: ContextTypes.DEFAULT_TYPE):
+    """Job callback executed when a trivia poll's time expires."""
+    job_data = context.job.data
+    chat_id = job_data['chat_id']
+    expected_poll_id = job_data['expected_poll_id']
+
+    session = trivia_sessions.get(chat_id)
+
+    # Check if the game is still active and the poll ID matches the current one
+    if not session or session["state"] != "polling" or session.get("current_poll_id") != expected_poll_id:
+        logger.info(f"Ignoring stale poll end job for poll {expected_poll_id} in chat {chat_id}")
+        return
+
+    logger.info(f"Processing end of poll {expected_poll_id} in chat {chat_id}")
+
+    # Announce the correct answer was handled implicitly by the poll closing
+    # We can add a small summary message if desired, but let's keep it simple for now.
+    
+    # Check if the game should end
+    if session["current_question_num"] >= session["total_questions"]:
+        await end_trivia(context, chat_id, "That's the last question!")
+    else:
+        # Ask the next question after a short delay
+        await asyncio.sleep(2) # Shorter delay after poll closes
+        await ask_next_trivia_question(context, chat_id)
+        
+async def get_new_trivia_question(context: ContextTypes.DEFAULT_TYPE, topic: str, asked_questions: list) -> dict | None:
+    """Gets a new, unique multiple-choice trivia question, options, and correct index from the AI."""
+    
+    history_prompt_part = ""
+    if asked_questions:
+        history = "\n - ".join(asked_questions)
+        history_prompt_part = f"You have already asked these questions, DO NOT repeat them:\n - {history}\n\n"
+
     prompt = (
-        f"You are a trivia host. Generate one fun, medium-difficulty question about **{topic}**. {history_prompt}"
-        "Format your response as ONLY a JSON object with 'question' and 'answer' keys. The answer must be short (1-3 words usually)."
+        f"You are a trivia game host generating multiple-choice questions about **{topic}**. {history_prompt_part}"
+        "Generate ONE new question with exactly 4 plausible options (one correct, three incorrect). "
+        "Format your response ONLY as a JSON object with three keys: "
+        "'question' (string), 'options' (a list of 4 strings), and 'correct_index' (an integer from 0 to 3 indicating the correct option's index). "
+        "Ensure options are concise. Do not add any other text or markdown."
     )
-    # Use a reliable AI model for structured output
-    response_text = await get_typegpt_response([{"role": "system", "content": prompt}])
+    messages = [{"role": "system", "content": prompt}]
+    response_text = await get_typegpt_response(messages) # Use your reliable AI call chain
     if not response_text:
-         logger.error("AI failed to generate trivia question text.")
+         logger.error("AI failed to generate trivia poll question text.")
          return None
     try:
-        # More robust JSON extraction
         json_match = re.search(r'\{[\s\S]*\}', response_text)
         if json_match:
             data = json.loads(json_match.group(0))
-            if 'question' in data and 'answer' in data:
-                return str(data['question']), str(data['answer']) # Ensure strings
+            # Validate the structure
+            if ('question' in data and isinstance(data['question'], str) and
+                'options' in data and isinstance(data['options'], list) and len(data['options']) == 4 and
+                'correct_index' in data and isinstance(data['correct_index'], int) and 0 <= data['correct_index'] <= 3):
+                # Ensure options are strings
+                data['options'] = [str(opt) for opt in data['options']]
+                return data # Return the full dict: {'question': '...', 'options': [...], 'correct_index': ...}
             else:
-                 logger.error(f"AI JSON missing 'question' or 'answer': {data}")
+                 logger.error(f"AI JSON has incorrect structure or types: {data}")
         else:
-             logger.error(f"No JSON found in AI trivia response: {response_text}")
+             logger.error(f"No JSON found in AI trivia poll response: {response_text}")
     except Exception as e:
-        logger.error(f"Failed to parse trivia question: {e}\nResponse: {response_text}")
+        logger.error(f"Failed to parse trivia poll question: {e}\nResponse: {response_text}")
     return None
 
 async def start_trivia(update: Update, context: ContextTypes.DEFAULT_TYPE, topic: str, question_count: int):
@@ -676,63 +722,61 @@ async def start_trivia(update: Update, context: ContextTypes.DEFAULT_TYPE, topic
          return
 
     trivia_sessions[chat_id] = {
-        "state": "registering", "topic": topic, "total_questions": question_count,
-        "current_question_num": 0, "players": {}, "current_answers": {},
-        "current_correct_answer": None, "registration_message_id": intro_message.message_id,
-        "asked_questions": [], "current_question_message_id": None
+        "state": "registering", # States: registering, polling, finished
+        "topic": topic,
+        "total_questions": question_count,
+        "current_question_num": 0,
+        "players": {}, # {user_id: {"username": str, "first_name": str, "score": int}}
+        "registration_message_id": intro_message.message_id,
+        "asked_questions": [],
+        "current_poll_id": None, # Store poll ID instead of message ID
+        "current_correct_index": None # Store correct index
     }
 
 async def ask_next_trivia_question(context: ContextTypes.DEFAULT_TYPE, chat_id: str):
-    session = trivia_sessions[chat_id]
+    """Fetches and sends the next trivia question as a Quiz Poll."""
+    session = trivia_sessions.get(chat_id)
+    if not session or session["state"] == "finished": return # Stop if game ended
+
     session["current_question_num"] += 1
-    session["current_answers"] = {}
     
     question_data = await get_new_trivia_question(context, session["topic"], session["asked_questions"])
     if not question_data:
         await end_trivia(context, chat_id, "I couldn't get a new question! Game ending.")
         return
         
-    question, answer = question_data
-    session["asked_questions"].append(question)
-    session["current_correct_answer"] = answer
+    question_text = question_data['question']
+    options = question_data['options']
+    correct_index = question_data['correct_index']
     
-    question_message = await send_deletable_message(context, int(chat_id), f"**Question {session['current_question_num']}/{session['total_questions']}:** {question}")
-    if question_message:
-        session["current_question_message_id"] = question_message.message_id
-        session["state"] = "asking"
-    else:
-        logger.error(f"Failed to send question message in chat {chat_id}, ending trivia.")
-        await end_trivia(context, chat_id, "Error sending question, game ending.")
+    session["asked_questions"].append(question_text) # Remember question text
+    session["current_correct_index"] = correct_index # Store correct index for scoring
 
+    try:
+        # Send the quiz poll - 60 second time limit
+        poll_message = await context.bot.send_poll(
+            chat_id=int(chat_id),
+            question=f"Q{session['current_question_num']}/{session['total_questions']}: {question_text}",
+            options=options,
+            type='quiz',
+            correct_option_id=correct_index,
+            is_anonymous=False, # Important for scoring
+            open_period=60 # Poll duration in seconds
+        )
+        session["current_poll_id"] = poll_message.poll.id
+        session["state"] = "polling" # Update state
 
-async def process_trivia_round(context: ContextTypes.DEFAULT_TYPE, chat_id: str):
-    session = trivia_sessions[chat_id]
-    correct_answer = session["current_correct_answer"]
-    
-    # Use copy to avoid modifying dict during iteration if needed later, ensure keys are int
-    player_answers_for_judging = {int(uid): ans for uid, ans in session["current_answers"].items()}
-    judged_results = await judge_answers_batch(context, correct_answer, player_answers_for_judging)
-    
-    points_to_award = 10
-    # Use items() on original dict to preserve order for scoring
-    for user_id, user_answer in list(session["current_answers"].items()):
-        if judged_results.get(user_id, False): # Check if the AI marked this user as correct
-            if points_to_award > 0:
-                # Ensure player data exists before trying to update score
-                if user_id in session["players"]:
-                    session["players"][user_id]["score"] += points_to_award
-                    points_to_award = max(0, points_to_award - 1)
-                else:
-                    logger.warning(f"User {user_id} answered but is not in player list for chat {chat_id}")
+        # Schedule job to process results after poll closes + small buffer
+        context.job_queue.run_once(
+             process_poll_end_callback,
+             62, # open_period + buffer
+             data={'chat_id': chat_id, 'expected_poll_id': poll_message.poll.id},
+             name=f"trivia_poll_end_{chat_id}_{poll_message.poll.id}"
+         )
 
-
-    await send_deletable_message(context, int(chat_id), f"The correct answer was: **{correct_answer}**")
-    
-    if session["current_question_num"] >= session["total_questions"]:
-        await end_trivia(context, chat_id, "That's the last question!")
-    else:
-        await asyncio.sleep(3) # Short pause before next question
-        await ask_next_trivia_question(context, chat_id)
+    except Exception as e:
+        logger.error(f"Failed to send trivia poll: {e}")
+        await end_trivia(context, chat_id, "Error sending poll, game ending.")
 
 async def end_trivia(context: ContextTypes.DEFAULT_TYPE, chat_id: str, reason: str):
     session = trivia_sessions.get(chat_id, {})
@@ -751,7 +795,8 @@ async def end_trivia(context: ContextTypes.DEFAULT_TYPE, chat_id: str, reason: s
         await context.bot.send_message(int(chat_id), leaderboard, parse_mode='Markdown')
     except Exception as e:
          logger.error(f"Failed to send final leaderboard: {e}")
-    if chat_id in trivia_sessions: trivia_sessions[chat_id]["state"] = "inactive" # Mark game as over
+    if chat_id in trivia_sessions:
+        trivia_sessions[chat_id]["state"] = "finished" # Use 'finished' state # Mark game as over
 
 # --- Master Handlers ---
 
@@ -903,61 +948,49 @@ async def master_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     await history_capture_handler(update, context) # Always capture history
 
 
-async def trivia_master_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Ensure message and text exist
-    if not update.message or not update.message.text: return
-
+async def trivia_master_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Handles player registration ('me', 'all in') during the registration phase."""
     chat_id = str(update.message.chat_id)
-    # This function should only execute if a session is active (checked in master_text_handler)
     session = trivia_sessions.get(chat_id)
-    if not session: return # Should not happen if called correctly, but safety check
+
+    # Only act during registration state
+    if not session or session.get("state") != "registering":
+        return False
 
     user = update.message.from_user
     text = update.message.text.lower().strip()
 
-    # --- State 1: Player Registration ---
-    if session["state"] == "registering":
-        # Only process replies to the registration message
-        if update.message.reply_to_message and update.message.reply_to_message.message_id == session.get("registration_message_id"):
-            if text == 'me':
-                if user.id not in session["players"]:
-                    session["players"][user.id] = {"username": user.username, "first_name": user.first_name, "score": 0}
-                    await update.message.reply_text(f"{user.first_name} is in! ✅")
-                else:
-                    await update.message.reply_text("You're already in!")
-            elif text == 'all in':
-                if not session["players"]:
-                    await update.message.reply_text("Need at least one player to start!")
-                    return
-                # Compile player list for announcement
-                player_list = []
-                for p_data in session["players"].values():
-                     mention = f"@{p_data['username']}" if p_data['username'] else p_data['first_name']
-                     player_list.append(mention)
-                await update.message.reply_text(f"Registration closed! Players: {', '.join(player_list)}. Let's begin!")
-                # Delete registration message now that it's done
-                try: await context.bot.delete_message(chat_id, session["registration_message_id"])
-                except BadRequest: pass
-                # Start the game
-                await ask_next_trivia_question(context, chat_id)
-    
-    # --- State 2: Answering Questions ---
-    elif session["state"] == "asking":
-        # Check if it's a reply to the current question by a registered player who hasn't answered yet
-        if (update.message.reply_to_message and
-            update.message.reply_to_message.message_id == session.get("current_question_message_id") and
-            user.id in session["players"] and
-            user.id not in session["current_answers"]):
-            
-            session["current_answers"][user.id] = update.message.text # Store the raw answer
-            try:
-                # Acknowledge answer with reaction
-                await context.bot.set_message_reaction(chat_id=update.effective_chat.id, message_id=update.effective_message.id, reaction=[ReactionTypeEmoji("✅")])
-            except BadRequest: pass # Ignore if reaction fails
+    # Check if it's a reply to the registration message
+    if update.message.reply_to_message and update.message.reply_to_message.message_id == session.get("registration_message_id"):
+        if text == 'me':
+            if user.id not in session["players"]:
+                session["players"][user.id] = {"username": user.username, "first_name": user.first_name, "score": 0}
+                await update.message.reply_text(f"{user.first_name} is in! ✅")
+            else:
+                await update.message.reply_text("You're already in!")
+            return True # Message handled
 
-            # Check if all registered players have answered
-            if len(session["current_answers"]) == len(session["players"]):
-                await process_trivia_round(context, chat_id)
+        elif text == 'all in':
+            if not session["players"]:
+                await update.message.reply_text("We need at least one player to start!")
+                return True # Message handled
+
+            # Get player names for announcement
+            player_list = []
+            for p_data in session["players"].values():
+                mention = f"@{p_data['username']}" if p_data['username'] else p_data['first_name']
+                player_list.append(mention)
+
+            await update.message.reply_text(f"Registration closed! Players: {', '.join(player_list)}. Let's begin!")
+            # Delete registration message
+            try: await context.bot.delete_message(chat_id, session["registration_message_id"])
+            except BadRequest: pass
+            
+            # Start the game by asking the first question
+            await ask_next_trivia_question(context, chat_id)
+            return True # Message handled
+            
+    return False # Not a relevant registration message
 
 async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Ensure messages exist
@@ -1585,9 +1618,9 @@ def main() -> None:
     # --- Register ALL Handlers ---
     handlers = [
         # ... (Your list of CommandHandlers and MessageHandlers remains the same) ...
-        MessageHandler(filters.TEXT & ~filters.COMMAND, master_text_handler)
+        PollAnswerHandler(poll_answer_handler), # Handles answers to quiz polls
+        MessageHandler(filters.TEXT & ~filters.COMMAND, master_text_handler) # Handles registration, replies, mentions etc.
     ]
-    application.add_handlers(handlers)
 
     # --- Schedule Daily Reminder (AFTER application is built) ---
     try:
