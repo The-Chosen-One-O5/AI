@@ -228,8 +228,14 @@ async def generate_video_from_text(prompt: str) -> bytes | None:
         return None
 
     logger.info(f"Generating video with Samurai API for prompt: {prompt}")
-    # Assuming an OpenAI-compatible endpoint and payload structure
-    api_url = "https://samuraiapi.in/v1/videos/generations" # Assumed endpoint
+    
+    # Try different possible endpoint formats
+    api_urls = [
+        "https://samuraiapi.in/v1/videos/generations",
+        "https://samuraiapi.in/videos/generations",
+        "https://api.samuraiapi.in/v1/videos/generations"
+    ]
+    
     headers = {
         "Authorization": f"Bearer {SAMURAI_API_KEY}",
         "Content-Type": "application/json"
@@ -237,41 +243,49 @@ async def generate_video_from_text(prompt: str) -> bytes | None:
     payload = {
         "model": "wan-ai-wan2.1-t2v-14b",
         "prompt": prompt,
-        "n": 1, # Request one video
-        # Add other parameters like size, fps, etc., if supported by the API
-        # "size": "1024x576",
-        # "fps": 24
+        "n": 1
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=300.0) as client: # Longer timeout for video
-            response = await client.post(api_url, headers=headers, json=payload)
+    for api_url in api_urls:
+        try:
+            logger.info(f"Trying endpoint: {api_url}")
+            async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
+                response = await client.post(api_url, headers=headers, json=payload)
+                
+                logger.info(f"Response status: {response.status_code}")
+                logger.info(f"Response headers: {response.headers}")
+                logger.info(f"Response body preview: {response.text[:500]}")
 
-            if response.status_code != 200:
-                logger.error(f"Samurai Video API error: {response.status_code} - {response.text}")
-                return None
+                if response.status_code == 200:
+                    result_data = response.json().get("data")
+                    if result_data and isinstance(result_data, list) and len(result_data) > 0:
+                        video_url = result_data[0].get("url")
+                        if video_url:
+                            logger.info(f"Downloading generated video from: {video_url}")
+                            video_response = await client.get(video_url, timeout=300.0)
+                            video_response.raise_for_status()
+                            logger.info("Video downloaded successfully.")
+                            return video_response.content
+                    
+                    logger.warning(f"Unexpected response structure from {api_url}")
+                    continue
+                    
+                elif response.status_code == 404:
+                    logger.warning(f"Endpoint not found: {api_url}")
+                    continue
+                else:
+                    logger.error(f"API error at {api_url}: {response.status_code} - {response.text}")
+                    continue
 
-            result_data = response.json().get("data")
-            # Assuming the response structure is similar to OpenAI's image gen, returning a URL
-            if result_data and isinstance(result_data, list) and result_data[0].get("url"):
-                video_url = result_data[0]["url"]
-                logger.info(f"Downloading generated video from: {video_url}")
-
-                # Download the video file
-                video_response = await client.get(video_url, timeout=300.0) # Long timeout for download
-                video_response.raise_for_status() # Check for download errors
-                logger.info("Video downloaded successfully.")
-                return video_response.content
-            else:
-                logger.error(f"Samurai Video API response did not contain expected URL: {response.json()}")
-                return None
-
-    except httpx.TimeoutException:
-        logger.error("Samurai Video API timed out.")
-        return None
-    except Exception as e:
-        logger.error(f"Failed to generate video with Samurai API: {e}", exc_info=True)
-        return None
+        except httpx.TimeoutException:
+            logger.error(f"Timeout with endpoint: {api_url}")
+            continue
+        except Exception as e:
+            logger.error(f"Failed with endpoint {api_url}: {e}", exc_info=True)
+            continue
+    
+    logger.error("All endpoint attempts failed for video generation.")
+    return None
 
 def create_telegraph_page(title: str, content: str, config: dict) -> str | None:
     try:
@@ -601,53 +615,66 @@ async def generate_sticker_image(prompt: str) -> bytes | None:
 
     logger.info(f"Generating sticker image with Samurai API for prompt: {prompt}")
     
-    # Try primary model first, then fallback
+    # Try different endpoint formats
+    api_urls = [
+        "https://samuraiapi.in/v1/images/generations",
+        "https://samuraiapi.in/images/generations",
+        "https://api.samuraiapi.in/v1/images/generations"
+    ]
+    
     models = ["free/qwen-qwen-image", "free/qwen-qwen-image/p-2"]
     
-    for model in models:
-        try:
-            api_url = "https://samuraiapi.in/v1/images/generations"
-            headers = {
-                "Authorization": f"Bearer {SAMURAI_API_KEY}",
-                "Content-Type": "application/json"
-            }
-            payload = {
-                "model": model,
-                "prompt": prompt,
-                "n": 1,
-                "size": "1024x1024"
-            }
+    for api_url in api_urls:
+        for model in models:
+            try:
+                logger.info(f"Trying endpoint: {api_url} with model: {model}")
+                
+                headers = {
+                    "Authorization": f"Bearer {SAMURAI_API_KEY}",
+                    "Content-Type": "application/json"
+                }
+                payload = {
+                    "model": model,
+                    "prompt": prompt,
+                    "n": 1,
+                    "size": "1024x1024"
+                }
 
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(api_url, headers=headers, json=payload)
+                async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+                    response = await client.post(api_url, headers=headers, json=payload)
+                    
+                    logger.info(f"Response status: {response.status_code}")
+                    logger.info(f"Response body preview: {response.text[:500]}")
 
-                if response.status_code != 200:
-                    logger.warning(f"Samurai API error with model {model}: {response.status_code} - {response.text}")
-                    continue  # Try fallback model
+                    if response.status_code == 200:
+                        result_data = response.json().get("data")
+                        if result_data and isinstance(result_data, list) and len(result_data) > 0:
+                            image_url = result_data[0].get("url")
+                            if image_url:
+                                logger.info(f"Downloading image from: {image_url}")
+                                image_response = await client.get(image_url, timeout=120.0)
+                                image_response.raise_for_status()
+                                logger.info(f"Image downloaded successfully using {model} at {api_url}.")
+                                return image_response.content
+                        
+                        logger.warning(f"Unexpected response structure from {api_url}")
+                        continue
+                        
+                    elif response.status_code == 404:
+                        logger.warning(f"Endpoint not found: {api_url}")
+                        break  # Try next URL
+                    else:
+                        logger.warning(f"API error: {response.status_code} - {response.text}")
+                        continue
 
-                result_data = response.json().get("data")
-                if result_data and isinstance(result_data, list) and result_data[0].get("url"):
-                    image_url = result_data[0]["url"]
-                    logger.info(f"Downloading generated image from: {image_url}")
-
-                    # Download the image
-                    image_response = await client.get(image_url, timeout=120.0)
-                    image_response.raise_for_status()
-                    logger.info(f"Image downloaded successfully using model {model}.")
-                    return image_response.content
-                else:
-                    logger.warning(f"Model {model} response did not contain expected URL: {response.json()}")
-                    continue  # Try fallback model
-
-        except httpx.TimeoutException:
-            logger.warning(f"Samurai API timed out with model {model}. Trying fallback...")
-            continue
-        except Exception as e:
-            logger.warning(f"Failed to generate image with model {model}: {e}")
-            continue
+            except httpx.TimeoutException:
+                logger.warning(f"Timeout with {api_url} and model {model}")
+                continue
+            except Exception as e:
+                logger.warning(f"Failed with {api_url} and model {model}: {e}")
+                continue
     
-    # All models failed
-    logger.error("All Samurai API models failed for sticker generation.")
+    logger.error("All endpoint and model attempts failed for sticker generation.")
     return None
 
 async def convert_to_sticker(image_bytes: bytes) -> bytes | None:
