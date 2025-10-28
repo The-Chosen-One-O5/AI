@@ -1299,6 +1299,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "**Other Commands**\n"
         "`/audio` - Toggle voice responses ON/OFF (Admin)\n"
         "`/react` (Reply to msg) - Force AI reaction\n"
+        "`/videoedit [prompt]` (Reply to image) - Generate video from image\n"
         "`/help` - Show this message\n"
         "`/chem [SMILES]` - Draw chemical structure\n"
         "`/tex [LaTeX]` - Render LaTeX expression\n"
@@ -1605,6 +1606,151 @@ async def askit_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         logger.error(f"Askit handler failed: {e}")
         await context.bot.edit_message_text("Image analysis failed.", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
 
+async def videoedit_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Generate video from image using Replicate's free/wan-2.1-i2v-14b-720p model."""
+    if not update.message: 
+        return
+    
+    config = load_config()
+    chat_id = str(update.message.chat_id)
+    if not config.get("ai_enabled_config", {}).get(chat_id, False):
+        await update.message.reply_text("AI is off for this group.")
+        return
+    
+    # Check if replying to a message with an image
+    replied_message = update.message.reply_to_message
+    if not (replied_message and replied_message.photo):
+        await update.message.reply_text("Reply to an image with /videoedit \"prompt\" to generate a video.")
+        return
+    
+    # Extract prompt from command arguments
+    prompt = " ".join(context.args)
+    if not prompt:
+        await update.message.reply_text("Please provide a prompt. Usage: /videoedit \"your prompt here\"")
+        return
+    
+    # Check if Replicate API key is configured
+    if not REPLICATE_API_KEY:
+        await update.message.reply_text("Video generation is not configured (missing API key).")
+        return
+    
+    thinking_message = await update.message.reply_text("🎬 Generating video... This may take a few minutes.")
+    
+    try:
+        # Download the image from Telegram
+        logger.info(f"Downloading image for video generation with prompt: {prompt}")
+        photo_file = await replied_message.photo[-1].get_file()
+        photo_bytes = await photo_file.download_as_bytearray()
+        
+        # Convert bytes to a file-like object for Replicate
+        image_io = io.BytesIO(photo_bytes)
+        
+        # Use Replicate to generate video
+        logger.info("Calling Replicate API for image-to-video generation...")
+        
+        def run_replicate_i2v():
+            """Run Replicate image-to-video in a blocking manner."""
+            try:
+                output = replicate.run(
+                    "free/wan-2.1-i2v-14b-720p",
+                    input={
+                        "image": image_io,
+                        "prompt": prompt
+                    }
+                )
+                return output
+            except Exception as e:
+                logger.error(f"Replicate API error: {e}")
+                return None
+        
+        # Run in a separate thread to avoid blocking
+        output = await asyncio.to_thread(run_replicate_i2v)
+        
+        if not output:
+            await context.bot.edit_message_text(
+                "❌ Video generation failed. The API returned no output.",
+                chat_id=update.effective_chat.id,
+                message_id=thinking_message.message_id
+            )
+            return
+        
+        # Handle different output formats from Replicate
+        video_url = None
+        if isinstance(output, str):
+            video_url = output
+        elif isinstance(output, list) and len(output) > 0:
+            video_url = output[0] if isinstance(output[0], str) else str(output[0])
+        else:
+            logger.warning(f"Unexpected output type: {type(output)}, trying to convert to string")
+            try:
+                video_url = str(output)
+            except:
+                pass
+        
+        if not video_url or not video_url.startswith('http'):
+            logger.error(f"Invalid video URL from Replicate: {video_url}")
+            await context.bot.edit_message_text(
+                "❌ Video generation failed. Invalid response from API.",
+                chat_id=update.effective_chat.id,
+                message_id=thinking_message.message_id
+            )
+            return
+        
+        logger.info(f"Downloading generated video from: {video_url}")
+        await context.bot.edit_message_text(
+            "📥 Downloading video...",
+            chat_id=update.effective_chat.id,
+            message_id=thinking_message.message_id
+        )
+        
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            video_response = await client.get(video_url)
+            video_response.raise_for_status()
+            video_bytes = video_response.content
+        
+        logger.info(f"Video downloaded successfully. Size: {len(video_bytes)} bytes")
+        
+        # Send the video back to the chat
+        await context.bot.send_video(
+            chat_id=update.effective_chat.id,
+            video=video_bytes,
+            caption=f"🎬 Generated video\nPrompt: {prompt}",
+            reply_to_message_id=replied_message.message_id
+        )
+        
+        # Delete the thinking message
+        try:
+            await thinking_message.delete()
+        except BadRequest:
+            pass
+        
+        logger.info("Video sent successfully!")
+        
+    except httpx.HTTPStatusError as e:
+        logger.error(f"HTTP error downloading video: {e}")
+        await context.bot.edit_message_text(
+            "❌ Failed to download the generated video.",
+            chat_id=update.effective_chat.id,
+            message_id=thinking_message.message_id
+        )
+    except httpx.TimeoutException:
+        logger.error("Timeout while generating or downloading video")
+        await context.bot.edit_message_text(
+            "⏱️ Video generation timed out. Please try again with a simpler prompt.",
+            chat_id=update.effective_chat.id,
+            message_id=thinking_message.message_id
+        )
+    except Exception as e:
+        logger.error(f"Video generation handler failed: {e}", exc_info=True)
+        try:
+            await context.bot.edit_message_text(
+                f"❌ Video generation failed: {str(e)}",
+                chat_id=update.effective_chat.id,
+                message_id=thinking_message.message_id
+            )
+        except BadRequest:
+            pass
+
 async def simple_ai_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
     # Keep this for backward compatibility or simpler tasks if needed
@@ -1854,6 +2000,7 @@ def main() -> None:
         # Image Commands
         CommandHandler("nanoedit", nanoedit_handler),
         CommandHandler("askit", askit_handler),
+        CommandHandler("videoedit", videoedit_handler),
         # CommandHandler("image", image_generation_handler), # Can be re-added if direct access needed
 
         # Settings Commands (Admin)
