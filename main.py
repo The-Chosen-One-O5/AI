@@ -346,7 +346,7 @@ async def call_cerebras_api(messages: list) -> str | None:
         def run_cerebras_sync():
             stream = client.chat.completions.create(
                 messages=messages,
-                model="llama3.1-70b",
+                model="qwen-3-235b-a22b-instruct-2507",
                 stream=True,
                 max_tokens=8000,
                 temperature=0.7,
