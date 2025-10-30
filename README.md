@@ -4,13 +4,18 @@ A comprehensive AI-powered Telegram bot with proactive call participation, trivi
 
 ## Features
 
-### 🎤 Proactive Call Participation (NEW!)
-- **Voice Message Transcription**: Automatically transcribes voice messages using Groq's Whisper API
-- **Contextual Responses**: Generates intelligent responses based on call transcripts and chat history
-- **Text or Voice Output**: Responds via text or voice messages (configurable)
+### 🎤 Voice Call Features with TTS/STT (NEW!)
+- **Speech-to-Text (STT)**: Local transcription using faster-whisper with Groq fallback
+- **Text-to-Speech (TTS)**: Natural voice synthesis using Edge-TTS
+- **Real-time Call Streaming**: pytgcalls integration for live voice chat participation
+- **Voice Message Transcription**: Automatic transcription with timestamps
+- **Contextual Responses**: AI responses based on call transcripts and chat history
+- **Voice Output Streaming**: Direct audio streaming to voice calls or voice message fallback
+- **FFmpeg Integration**: Seamless audio format conversions (PCM, Opus, WAV)
+- **Multi-language Support**: Configurable languages for both TTS and STT
 - **Smart Rate Limiting**: 30-second cooldown, probabilistic responses to avoid spam
 - **Quiet Hours**: Configure times when bot should not participate
-- **Admin Controls**: Full control over when and how the bot engages in calls
+- **Admin Controls**: Full control over TTS/STT settings per chat
 
 ### 🤖 AI Assistant
 - **Multi-Provider Fallback**: Cerebras → Groq → ChatAnywhere for maximum reliability
@@ -41,6 +46,8 @@ A comprehensive AI-powered Telegram bot with proactive call participation, trivi
 ### Prerequisites
 - Python 3.10+
 - Telegram Bot Token (from @BotFather)
+- Telegram API ID and API Hash (from https://my.telegram.org)
+- FFmpeg installed on system
 - API Keys (see Configuration section)
 
 ### Installation
@@ -74,15 +81,25 @@ Create a `.env` file with:
 BOT_TOKEN=your_telegram_bot_token
 TARGET_CHAT_ID=-1001234567890  # Your group chat ID
 
+# For pytgcalls (voice call participation)
+API_ID=your_telegram_api_id
+API_HASH=your_telegram_api_hash
+
 # AI Providers (at least one required)
 CEREBRAS_API_KEY=your_cerebras_key
 GROQ_API_KEY=your_groq_key
 CHATANYWHERE_API_KEY=your_chatanywhere_key
 
-# For voice transcription (proactive calls)
-GROQ_API_KEY=your_groq_key  # Required for STT
+# TTS/STT Configuration (optional)
+WHISPER_MODEL_SIZE=base  # Options: tiny, base, small, medium, large
+EDGE_TTS_VOICE=en-US-AriaNeural  # Edge-TTS voice name
+EDGE_TTS_RATE=+0%  # Speech rate: -50% to +100%
+FFMPEG_PATH=ffmpeg  # Path to FFmpeg binary
 
-# For voice responses (optional)
+# For voice transcription fallback (optional)
+GROQ_API_KEY=your_groq_key  # Used as STT fallback if local whisper fails
+
+# For legacy voice responses (optional, Edge-TTS is now primary)
 REPLICATE_API_KEY=your_replicate_key
 
 # For web search (optional)
@@ -133,6 +150,18 @@ The bot creates and manages these JSON files:
 /callstatus         - Check call feature status (Admin)
 /callquiet HH:MM HH:MM  - Set quiet hours (Admin)
 /callconfig [num]   - Set min participants (Admin)
+
+# TTS (Text-to-Speech) Commands
+/ttson              - Enable TTS for this chat (Admin)
+/ttsoff             - Disable TTS (Admin)
+/ttsconfig [voice] [rate]  - Configure TTS voice and rate (Admin)
+/ttsstatus          - Check TTS status
+
+# STT (Speech-to-Text) Commands
+/stton              - Enable STT for this chat (Admin)
+/sttoff             - Disable STT (Admin)
+/sttconfig [lang]   - Configure STT language (Admin)
+/sttstatus          - Check STT status and model info
 ```
 
 ### Image Commands
@@ -183,33 +212,45 @@ The bot creates and manages these JSON files:
 /unlock   - Unlock chat
 ```
 
-## Proactive Call Features
+## Voice Call Features with TTS/STT
 
-The bot can now participate in group calls by processing voice messages. See [PROACTIVE_CALLS.md](PROACTIVE_CALLS.md) for detailed documentation.
+The bot can participate in group calls with real-time speech recognition and voice synthesis. See [PROACTIVE_CALLS.md](PROACTIVE_CALLS.md) for detailed documentation.
 
 ### Key Features:
-- 🎙️ **Voice Transcription**: Converts speech to text using Groq Whisper
+- 🎙️ **Local STT**: Fast transcription using faster-whisper (CPU/GPU) with Groq fallback
+- 🔊 **Edge-TTS**: Natural voice synthesis with 100+ voices in multiple languages
+- 🎵 **pytgcalls Integration**: Direct audio streaming to voice calls
+- 🔄 **FFmpeg Processing**: Seamless audio format conversions
 - 🧠 **Context Awareness**: Merges call transcripts with chat history
-- 💬 **Smart Responses**: Text or voice replies (configurable)
+- 💬 **Smart Responses**: Streamed audio or voice message fallback
 - ⏰ **Quiet Hours**: Configurable do-not-disturb periods
 - 🛡️ **Rate Limiting**: Built-in cooldowns prevent spam
-- 📊 **Status Monitoring**: Track transcription quality and errors
+- 📊 **Status Monitoring**: Track transcription quality, latency, and errors
+- 🌐 **Multi-language**: Configurable languages for both TTS and STT
 
 ### Quick Setup:
 ```bash
-# 1. Enable for your group
+# 1. Enable STT for voice message transcription
+/stton
+
+# 2. Configure STT language (optional)
+/sttconfig en
+
+# 3. Enable TTS for voice responses
+/ttson
+
+# 4. Configure TTS voice and rate (optional)
+/ttsconfig en-US-AriaNeural +10%
+
+# 5. Enable proactive call participation (optional)
 /callon
 
-# 2. Set quiet hours (optional)
+# 6. Set quiet hours (optional)
 /callquiet 22:00 08:00
 
-# 3. Configure min participants (optional)
-/callconfig 3
-
-# 4. Enable voice responses (optional)
-/audio
-
-# 5. Check status
+# 7. Check status
+/sttstatus
+/ttsstatus
 /callstatus
 ```
 
@@ -226,8 +267,12 @@ The bot can now participate in group calls by processing voice messages. See [PR
 3. **Fallback 2**: ChatAnywhere (gpt-4o-mini)
 
 ### Voice Processing
-- **STT**: Groq Whisper (whisper-large-v3)
-- **TTS**: Replicate minimax/speech-02-hd
+- **STT Primary**: faster-whisper (local, configurable model size)
+- **STT Fallback**: Groq Whisper API (whisper-large-v3)
+- **TTS Primary**: Edge-TTS (100+ voices, free)
+- **TTS Legacy**: Replicate minimax/speech-02-hd (optional)
+- **Audio Processing**: FFmpeg for format conversions
+- **Call Streaming**: pytgcalls for real-time audio
 
 ### Vision Models
 - **Primary**: TypeGPT Fast (gemini-2.5-pro)
@@ -237,13 +282,18 @@ The bot can now participate in group calls by processing voice messages. See [PR
 
 Core libraries:
 - `python-telegram-bot[job-queue]` - Telegram Bot API
-- `telethon` - Userbot support (for future call joining)
-- `pytgcalls` - Voice call support
+- `telethon` - Userbot support for pytgcalls
+- `pytgcalls` - Voice call participation and streaming
+- `edge-tts` - Text-to-speech synthesis
+- `faster-whisper` - Local speech-to-text transcription
+- `soundfile` - Audio file handling
+- `numpy` - Audio processing
+- `ffmpeg-python` - Audio format conversions
 - `httpx` - Async HTTP client
 - `cerebras-cloud-sdk` - Cerebras AI
-- `groq` - Groq API (LLM + Whisper)
+- `groq` - Groq API (LLM + Whisper fallback)
 - `openai` - OpenAI-compatible clients
-- `replicate` - TTS/video generation
+- `replicate` - Legacy TTS/video generation
 - `rdkit` - Chemistry structures
 - `Pillow` - Image processing
 - `pydub` - Audio processing

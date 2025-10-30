@@ -46,6 +46,18 @@ config.json
 memory.json
 gossip.json
 
+# Telethon session files
+*.session
+*.session-journal
+bot_session.session
+
+# Temporary audio files
+*.ogg
+*.wav
+*.mp3
+*.raw
+*.pcm
+
 # Logs
 *.log
 

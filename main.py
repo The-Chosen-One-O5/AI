@@ -29,6 +29,22 @@ from telegram.ext import Application, CommandHandler, MessageHandler, PollAnswer
 from telegram.error import BadRequest
 from flask import Flask # Needed for keep_alive
 
+# --- TTS/STT Imports ---
+import edge_tts
+from faster_whisper import WhisperModel
+import soundfile as sf
+import numpy as np
+import tempfile
+import subprocess
+from pathlib import Path
+from typing import Optional, Tuple
+
+# --- pytgcalls Imports ---
+from pytgcalls import PyTgCalls, StreamType
+from pytgcalls.types.input_stream import AudioPiped, AudioVideoPiped
+from pytgcalls.types.input_stream.quality import HighQualityAudio
+from telethon import TelegramClient
+
 # --- Keep Alive Server Setup ---
 keep_alive_app = Flask('')
 
@@ -62,6 +78,14 @@ REPLICATE_API_KEY = os.environ.get('REPLICATE_API_KEY')
 CEREBRAS_API_KEY = os.environ.get('CEREBRAS_API_KEY')
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
 SAMURAI_API_KEY = os.environ.get('SAMURAI_API_KEY') # New key for Text-to-Video
+
+# --- TTS/STT Configuration ---
+API_ID = os.environ.get('API_ID')  # Telegram API ID for Telethon
+API_HASH = os.environ.get('API_HASH')  # Telegram API Hash for Telethon
+WHISPER_MODEL_SIZE = os.environ.get('WHISPER_MODEL_SIZE', 'base')  # tiny, base, small, medium, large
+EDGE_TTS_VOICE = os.environ.get('EDGE_TTS_VOICE', 'en-US-AriaNeural')  # Default voice
+EDGE_TTS_RATE = os.environ.get('EDGE_TTS_RATE', '+0%')  # Speech rate adjustment
+FFMPEG_PATH = os.environ.get('FFMPEG_PATH', 'ffmpeg')  # FFmpeg binary path
 
 # --- AI MODEL CONFIGURATION ---
 # Models used by the bot (for easy reference and updates):
@@ -98,7 +122,14 @@ else:
 chat_histories = {}
 active_random_jobs = set()
 trivia_sessions = {}
-active_calls = {}  # {chat_id: {"state": "active/idle", "participants": [], "transcript": deque(), "last_response_time": datetime, "error_count": 0}}
+active_calls = {}  # {chat_id: {"state": "active/idle", "participants": [], "transcript": deque(), "last_response_time": datetime, "error_count": 0, "call_handler": PyTgCalls}}
+audio_buffers = {}  # {chat_id: deque of audio chunks}
+tts_queues = {}  # {chat_id: asyncio.Queue for TTS chunks}
+
+# --- Global TTS/STT Services ---
+whisper_model: Optional[WhisperModel] = None
+telethon_client: Optional[TelegramClient] = None
+pytgcalls_instances = {}  # {chat_id: PyTgCalls instance}
 
 # --- Daily Reminder Configuration ---
 JEE_MAINS_DATE = datetime(2026, 1, 22).date()
@@ -124,7 +155,9 @@ def load_config() -> dict:
             "reminder_time": "04:00", "moderation_enabled": True,
             "random_chat_config": {}, "ai_enabled_config": {},
             "audio_mode_config": {}, "proactive_call_config": {},
-            "call_quiet_hours": {}  # {chat_id: {"start": "22:00", "end": "08:00"}}
+            "call_quiet_hours": {},  # {chat_id: {"start": "22:00", "end": "08:00"}}
+            "tts_config": {},  # {chat_id: {"enabled": bool, "voice": str, "rate": str, "language": str}}
+            "stt_config": {}   # {chat_id: {"enabled": bool, "language": str, "sensitivity": float}}
         }
 
 def save_config(config: dict) -> None:
@@ -288,6 +321,272 @@ async def generate_video_from_text(prompt: str) -> bytes | None:
     
     logger.error("All endpoint attempts failed for video generation.")
     return None
+
+# --- TTS/STT Services ---
+
+async def initialize_whisper_model():
+    """Initialize faster-whisper model for transcription."""
+    global whisper_model
+    if whisper_model is None:
+        try:
+            logger.info(f"Loading Whisper model: {WHISPER_MODEL_SIZE}")
+            whisper_model = await asyncio.to_thread(
+                WhisperModel,
+                WHISPER_MODEL_SIZE,
+                device="cpu",
+                compute_type="int8"
+            )
+            logger.info("Whisper model loaded successfully")
+        except Exception as e:
+            logger.error(f"Failed to load Whisper model: {e}", exc_info=True)
+            whisper_model = None
+    return whisper_model
+
+async def convert_audio_format(input_path: str, output_path: str, format: str = "wav", sample_rate: int = 48000, channels: int = 2) -> bool:
+    """Convert audio using FFmpeg with async subprocess."""
+    try:
+        cmd = [
+            FFMPEG_PATH,
+            "-i", input_path,
+            "-ar", str(sample_rate),
+            "-ac", str(channels),
+            "-f", format,
+            "-y",
+            output_path
+        ]
+        
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        stdout, stderr = await process.communicate()
+        
+        if process.returncode != 0:
+            logger.error(f"FFmpeg conversion failed: {stderr.decode()}")
+            return False
+        
+        logger.debug(f"Audio converted successfully: {input_path} -> {output_path}")
+        return True
+    except Exception as e:
+        logger.error(f"Audio conversion error: {e}", exc_info=True)
+        return False
+
+async def generate_tts_audio(text: str, voice: str = None, rate: str = None) -> Optional[bytes]:
+    """Generate TTS audio using Edge-TTS."""
+    if not text.strip():
+        return None
+    
+    voice = voice or EDGE_TTS_VOICE
+    rate = rate or EDGE_TTS_RATE
+    
+    # Remove markdown for cleaner TTS
+    cleaned_text = re.sub(r'[*_`]', '', text)
+    
+    # Split long text into chunks (Edge-TTS has limits)
+    max_length = 500
+    if len(cleaned_text) > max_length:
+        cleaned_text = cleaned_text[:max_length]
+    
+    try:
+        logger.info(f"Generating TTS with Edge-TTS (voice: {voice}, rate: {rate})")
+        
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as temp_mp3:
+            temp_mp3_path = temp_mp3.name
+        
+        try:
+            # Generate audio with Edge-TTS
+            communicate = edge_tts.Communicate(cleaned_text, voice, rate=rate)
+            await communicate.save(temp_mp3_path)
+            
+            # Convert to PCM WAV for pytgcalls
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_wav:
+                temp_wav_path = temp_wav.name
+            
+            success = await convert_audio_format(
+                temp_mp3_path, 
+                temp_wav_path,
+                format="s16le",
+                sample_rate=48000,
+                channels=2
+            )
+            
+            if not success:
+                logger.error("Failed to convert TTS audio to PCM")
+                return None
+            
+            # Read the converted audio
+            with open(temp_wav_path, "rb") as f:
+                audio_data = f.read()
+            
+            logger.info(f"TTS audio generated successfully ({len(audio_data)} bytes)")
+            return audio_data
+            
+        finally:
+            # Cleanup temp files
+            for path in [temp_mp3_path, temp_wav_path]:
+                if os.path.exists(path):
+                    os.unlink(path)
+    
+    except Exception as e:
+        logger.error(f"TTS generation failed: {e}", exc_info=True)
+        return None
+
+async def transcribe_with_whisper(audio_bytes: bytes, language: str = "en") -> Optional[Tuple[str, dict]]:
+    """Transcribe audio using faster-whisper with timestamps."""
+    model = await initialize_whisper_model()
+    if not model:
+        logger.error("Whisper model not available")
+        return None
+    
+    try:
+        # Save audio to temporary file
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_audio:
+            temp_audio.write(audio_bytes)
+            temp_audio_path = temp_audio.name
+        
+        try:
+            # Convert to WAV for Whisper
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_wav:
+                temp_wav_path = temp_wav.name
+            
+            success = await convert_audio_format(
+                temp_audio_path,
+                temp_wav_path,
+                format="wav",
+                sample_rate=16000,
+                channels=1
+            )
+            
+            if not success:
+                logger.error("Failed to convert audio for transcription")
+                return None
+            
+            # Transcribe with Whisper
+            logger.info("Transcribing audio with faster-whisper...")
+            start_time = asyncio.get_event_loop().time()
+            
+            segments, info = await asyncio.to_thread(
+                model.transcribe,
+                temp_wav_path,
+                language=language,
+                vad_filter=True,
+                vad_parameters=dict(min_silence_duration_ms=500)
+            )
+            
+            # Collect segments with timestamps
+            transcript_parts = []
+            segment_data = []
+            
+            for segment in segments:
+                transcript_parts.append(segment.text)
+                segment_data.append({
+                    "start": segment.start,
+                    "end": segment.end,
+                    "text": segment.text
+                })
+            
+            full_transcript = " ".join(transcript_parts).strip()
+            
+            elapsed = asyncio.get_event_loop().time() - start_time
+            logger.info(f"Transcription completed in {elapsed:.2f}s: {full_transcript[:100]}...")
+            
+            return full_transcript, {
+                "segments": segment_data,
+                "language": info.language,
+                "language_probability": info.language_probability,
+                "duration": info.duration
+            }
+        
+        finally:
+            # Cleanup temp files
+            for path in [temp_audio_path, temp_wav_path]:
+                if os.path.exists(path):
+                    os.unlink(path)
+    
+    except Exception as e:
+        logger.error(f"Whisper transcription failed: {e}", exc_info=True)
+        return None
+
+async def initialize_pytgcalls(chat_id: int):
+    """Initialize pytgcalls for a specific chat."""
+    global telethon_client, pytgcalls_instances
+    
+    if not API_ID or not API_HASH:
+        logger.error("API_ID and API_HASH required for pytgcalls")
+        return None
+    
+    chat_id_str = str(chat_id)
+    
+    if chat_id_str in pytgcalls_instances:
+        return pytgcalls_instances[chat_id_str]
+    
+    try:
+        # Initialize Telethon client if not exists
+        if telethon_client is None:
+            logger.info("Initializing Telethon client...")
+            telethon_client = TelegramClient(
+                'bot_session',
+                int(API_ID),
+                API_HASH
+            )
+            await telethon_client.start(bot_token=BOT_TOKEN)
+            logger.info("Telethon client started")
+        
+        # Create pytgcalls instance
+        logger.info(f"Creating pytgcalls instance for chat {chat_id}")
+        pytg_client = PyTgCalls(telethon_client)
+        await pytg_client.start()
+        
+        pytgcalls_instances[chat_id_str] = pytg_client
+        logger.info(f"pytgcalls instance created for chat {chat_id}")
+        
+        return pytg_client
+    
+    except Exception as e:
+        logger.error(f"Failed to initialize pytgcalls for chat {chat_id}: {e}", exc_info=True)
+        return None
+
+async def stream_tts_to_call(chat_id: int, text: str, voice: str = None, rate: str = None):
+    """Stream TTS audio to a voice call using pytgcalls."""
+    try:
+        pytg_client = await initialize_pytgcalls(chat_id)
+        if not pytg_client:
+            logger.error(f"Cannot stream TTS: pytgcalls not initialized for chat {chat_id}")
+            return False
+        
+        # Generate TTS audio
+        audio_data = await generate_tts_audio(text, voice, rate)
+        if not audio_data:
+            logger.error("Failed to generate TTS audio")
+            return False
+        
+        # Save to temporary file for streaming
+        with tempfile.NamedTemporaryFile(suffix=".raw", delete=False) as temp_file:
+            temp_file.write(audio_data)
+            temp_path = temp_file.name
+        
+        try:
+            # Stream audio to call
+            await pytg_client.join_group_call(
+                chat_id,
+                AudioPiped(temp_path),
+                stream_type=StreamType().pulse_stream
+            )
+            
+            logger.info(f"TTS audio streamed to call in chat {chat_id}")
+            return True
+        
+        finally:
+            # Cleanup will happen after streaming completes
+            await asyncio.sleep(2)  # Give time for streaming to start
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+    
+    except Exception as e:
+        logger.error(f"Failed to stream TTS to call: {e}", exc_info=True)
+        return False
 
 def create_telegraph_page(title: str, content: str, config: dict) -> str | None:
     try:
@@ -727,41 +1026,43 @@ async def get_emoji_reaction(message_text: str) -> str | None:
 
 # --- Proactive Call Management ---
 
-async def transcribe_audio(audio_bytes: bytes) -> str | None:
-    """Transcribe audio using Groq's Whisper API (free and fast)."""
+async def transcribe_audio(audio_bytes: bytes, language: str = "en") -> str | None:
+    """Transcribe audio using faster-whisper (local) with fallback to Groq."""
+    # Try local faster-whisper first
+    result = await transcribe_with_whisper(audio_bytes, language)
+    if result:
+        transcript, metadata = result
+        return transcript
+    
+    # Fallback to Groq's Whisper API if local fails
     if not GROQ_API_KEY:
-        logger.warning("Groq API key not set, cannot transcribe audio.")
+        logger.warning("Groq API key not set and local whisper failed, cannot transcribe audio.")
         return None
     
     try:
-        # Save audio bytes to temporary file for Groq API
-        import tempfile
+        logger.info("Falling back to Groq Whisper API...")
         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_audio:
             temp_audio.write(audio_bytes)
             temp_audio_path = temp_audio.name
         
         try:
-            # Use Groq's Whisper model for transcription
             client = AsyncGroq(api_key=GROQ_API_KEY)
             
             with open(temp_audio_path, "rb") as audio_file:
-                # Groq supports Whisper model for transcription
                 transcription = await client.audio.transcriptions.create(
                     file=audio_file,
                     model="whisper-large-v3",
                     response_format="text",
-                    language="en"  # Can be made configurable
+                    language=language
                 )
             
             if transcription:
-                logger.info(f"Transcribed audio: {transcription[:100]}...")
+                logger.info(f"Transcribed audio with Groq: {transcription[:100]}...")
                 return transcription.strip()
             else:
                 logger.warning("Groq Whisper returned empty transcription.")
                 return None
         finally:
-            # Clean up temporary file
-            import os
             if os.path.exists(temp_audio_path):
                 os.unlink(temp_audio_path)
     
@@ -863,15 +1164,20 @@ async def generate_call_response(chat_id: str, context: ContextTypes.DEFAULT_TYP
     return None
 
 async def handle_call_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle voice messages in active calls for transcription and response."""
+    """Handle voice messages in active calls for transcription and response with TTS/STT."""
     if not update.message or not update.message.voice:
         return
     
     chat_id = str(update.message.chat_id)
+    chat_id_int = int(chat_id)
     
-    # Check if this chat has proactive calls enabled
+    # Check if this chat has proactive calls or STT enabled
     config = load_config()
-    if not config.get("proactive_call_config", {}).get(chat_id, {}).get("enabled", False):
+    proactive_enabled = config.get("proactive_call_config", {}).get(chat_id, {}).get("enabled", False)
+    stt_config = config.get("stt_config", {}).get(chat_id, {})
+    stt_enabled = stt_config.get("enabled", False)
+    
+    if not (proactive_enabled or stt_enabled):
         return
     
     # Initialize call state if needed
@@ -891,36 +1197,55 @@ async def handle_call_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         voice_file = await update.message.voice.get_file()
         audio_bytes = await voice_file.download_as_bytearray()
         
-        transcription = await transcribe_audio(bytes(audio_bytes))
+        # Use configured STT language or default to English
+        stt_language = stt_config.get("language", "en")
+        transcription = await transcribe_audio(bytes(audio_bytes), stt_language)
         
         if transcription:
-            # Add to transcript
+            # Add to transcript with timestamp
             user_name = update.message.from_user.first_name
-            call_state["transcript"].append(f"{user_name}: {transcription}")
-            logger.info(f"Added to transcript: {user_name}: {transcription[:50]}...")
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            call_state["transcript"].append(f"[{timestamp}] {user_name}: {transcription}")
+            logger.info(f"[{timestamp}] Transcribed - {user_name}: {transcription[:50]}...")
             
             # Decide if bot should respond
-            # Use probabilistic response to avoid interrupting too much
             should_respond = random.random() < 0.3  # 30% chance to respond
             
             if should_respond:
                 response = await generate_call_response(chat_id, context)
                 
                 if response:
-                    # Check if audio mode is enabled
+                    # Check TTS configuration
+                    tts_config = config.get("tts_config", {}).get(chat_id, {})
+                    tts_enabled = tts_config.get("enabled", False)
                     is_audio_mode = config.get("audio_mode_config", {}).get(chat_id, False)
                     
-                    if is_audio_mode:
-                        # Send audio response
-                        audio_bytes = await generate_audio_from_text(response)
-                        if audio_bytes:
-                            await context.bot.send_voice(chat_id=int(chat_id), voice=audio_bytes)
-                        else:
-                            # Fallback to text if audio generation fails
-                            await context.bot.send_message(chat_id=int(chat_id), text=response)
+                    if tts_enabled or is_audio_mode:
+                        # Try to stream TTS to call first
+                        voice = tts_config.get("voice", EDGE_TTS_VOICE)
+                        rate = tts_config.get("rate", EDGE_TTS_RATE)
+                        
+                        streamed = await stream_tts_to_call(chat_id_int, response, voice, rate)
+                        
+                        if not streamed:
+                            # Fallback: generate TTS audio and send as voice message
+                            audio_data = await generate_tts_audio(response, voice, rate)
+                            if audio_data:
+                                with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_file:
+                                    temp_file.write(audio_data)
+                                    temp_path = temp_file.name
+                                
+                                try:
+                                    await context.bot.send_voice(chat_id=chat_id_int, voice=open(temp_path, 'rb'))
+                                finally:
+                                    if os.path.exists(temp_path):
+                                        os.unlink(temp_path)
+                            else:
+                                # Ultimate fallback to text
+                                await context.bot.send_message(chat_id=chat_id_int, text=response)
                     else:
                         # Send text response
-                        await context.bot.send_message(chat_id=int(chat_id), text=response)
+                        await context.bot.send_message(chat_id=chat_id_int, text=response)
         else:
             # Track transcription failures
             call_state["error_count"] = call_state.get("error_count", 0) + 1
@@ -929,8 +1254,8 @@ async def handle_call_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if call_state["error_count"] >= 5:
                 logger.warning(f"Too many transcription errors in chat {chat_id}, may need intervention")
                 await context.bot.send_message(
-                    chat_id=int(chat_id),
-                    text="⚠️ I'm having trouble hearing the call. You can use /callleave if needed."
+                    chat_id=chat_id_int,
+                    text="⚠️ I'm having trouble hearing the call. Check /sttconfig or /callleave."
                 )
                 call_state["error_count"] = 0  # Reset after warning
     
@@ -2334,6 +2659,222 @@ async def configure_call_settings(update: Update, context: ContextTypes.DEFAULT_
         logger.error(f"Error configuring call settings: {e}")
         await update.message.reply_text("Error updating call configuration.")
 
+# --- TTS/STT Configuration Commands ---
+
+async def ttson(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Enable TTS for this chat."""
+    if not update.message: return
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+        await update.message.reply_text("Only admins can enable TTS.")
+        return
+    
+    chat_id = str(update.message.chat_id)
+    config = load_config()
+    
+    if "tts_config" not in config:
+        config["tts_config"] = {}
+    
+    if chat_id not in config["tts_config"]:
+        config["tts_config"][chat_id] = {}
+    
+    config["tts_config"][chat_id]["enabled"] = True
+    save_config(config)
+    
+    await update.message.reply_text("✅ TTS enabled for this chat. Bot will speak responses during calls.")
+
+async def ttsoff(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Disable TTS for this chat."""
+    if not update.message: return
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+        await update.message.reply_text("Only admins can disable TTS.")
+        return
+    
+    chat_id = str(update.message.chat_id)
+    config = load_config()
+    
+    if "tts_config" not in config:
+        config["tts_config"] = {}
+    
+    if chat_id not in config["tts_config"]:
+        config["tts_config"][chat_id] = {}
+    
+    config["tts_config"][chat_id]["enabled"] = False
+    save_config(config)
+    
+    await update.message.reply_text("✅ TTS disabled for this chat.")
+
+async def ttsconfig(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Configure TTS voice and rate. Usage: /ttsconfig [voice] [rate]"""
+    if not update.message: return
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+        await update.message.reply_text("Only admins can configure TTS.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: `/ttsconfig [voice] [rate]`\n"
+            "Example: `/ttsconfig en-US-AriaNeural +10%`\n"
+            "Common voices: en-US-AriaNeural, en-GB-SoniaNeural, en-US-GuyNeural\n"
+            "Rate: -50% to +100% (default +0%)",
+            parse_mode='Markdown'
+        )
+        return
+    
+    try:
+        voice = context.args[0] if len(context.args) > 0 else EDGE_TTS_VOICE
+        rate = context.args[1] if len(context.args) > 1 else EDGE_TTS_RATE
+        
+        chat_id = str(update.message.chat_id)
+        config = load_config()
+        
+        if "tts_config" not in config:
+            config["tts_config"] = {}
+        
+        if chat_id not in config["tts_config"]:
+            config["tts_config"][chat_id] = {"enabled": False}
+        
+        config["tts_config"][chat_id]["voice"] = voice
+        config["tts_config"][chat_id]["rate"] = rate
+        save_config(config)
+        
+        await update.message.reply_text(
+            f"✅ TTS configuration updated:\n"
+            f"**Voice:** {voice}\n"
+            f"**Rate:** {rate}",
+            parse_mode='Markdown'
+        )
+    
+    except Exception as e:
+        logger.error(f"Error configuring TTS: {e}")
+        await update.message.reply_text("Error updating TTS configuration.")
+
+async def ttsstatus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Check TTS status for this chat."""
+    if not update.message: return
+    
+    chat_id = str(update.message.chat_id)
+    config = load_config()
+    tts_config = config.get("tts_config", {}).get(chat_id, {})
+    
+    enabled = tts_config.get("enabled", False)
+    voice = tts_config.get("voice", EDGE_TTS_VOICE)
+    rate = tts_config.get("rate", EDGE_TTS_RATE)
+    
+    status = "🔊 **Enabled**" if enabled else "🔇 **Disabled**"
+    
+    await update.message.reply_text(
+        f"TTS Status: {status}\n"
+        f"Voice: {voice}\n"
+        f"Rate: {rate}",
+        parse_mode='Markdown'
+    )
+
+async def stton(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Enable STT for this chat."""
+    if not update.message: return
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+        await update.message.reply_text("Only admins can enable STT.")
+        return
+    
+    chat_id = str(update.message.chat_id)
+    config = load_config()
+    
+    if "stt_config" not in config:
+        config["stt_config"] = {}
+    
+    if chat_id not in config["stt_config"]:
+        config["stt_config"][chat_id] = {}
+    
+    config["stt_config"][chat_id]["enabled"] = True
+    save_config(config)
+    
+    # Initialize Whisper model in background
+    asyncio.create_task(initialize_whisper_model())
+    
+    await update.message.reply_text("✅ STT enabled for this chat. Send voice messages to transcribe them.")
+
+async def sttoff(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Disable STT for this chat."""
+    if not update.message: return
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+        await update.message.reply_text("Only admins can disable STT.")
+        return
+    
+    chat_id = str(update.message.chat_id)
+    config = load_config()
+    
+    if "stt_config" not in config:
+        config["stt_config"] = {}
+    
+    if chat_id not in config["stt_config"]:
+        config["stt_config"][chat_id] = {}
+    
+    config["stt_config"][chat_id]["enabled"] = False
+    save_config(config)
+    
+    await update.message.reply_text("✅ STT disabled for this chat.")
+
+async def sttconfig(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Configure STT language. Usage: /sttconfig [language]"""
+    if not update.message: return
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+        await update.message.reply_text("Only admins can configure STT.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: `/sttconfig [language]`\n"
+            "Example: `/sttconfig en` or `/sttconfig es`\n"
+            "Common languages: en, es, fr, de, it, pt, ru, zh, ja, ko",
+            parse_mode='Markdown'
+        )
+        return
+    
+    try:
+        language = context.args[0]
+        
+        chat_id = str(update.message.chat_id)
+        config = load_config()
+        
+        if "stt_config" not in config:
+            config["stt_config"] = {}
+        
+        if chat_id not in config["stt_config"]:
+            config["stt_config"][chat_id] = {"enabled": False}
+        
+        config["stt_config"][chat_id]["language"] = language
+        save_config(config)
+        
+        await update.message.reply_text(
+            f"✅ STT language set to: **{language}**",
+            parse_mode='Markdown'
+        )
+    
+    except Exception as e:
+        logger.error(f"Error configuring STT: {e}")
+        await update.message.reply_text("Error updating STT configuration.")
+
+async def sttstatus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Check STT status for this chat."""
+    if not update.message: return
+    
+    chat_id = str(update.message.chat_id)
+    config = load_config()
+    stt_config = config.get("stt_config", {}).get(chat_id, {})
+    
+    enabled = stt_config.get("enabled", False)
+    language = stt_config.get("language", "en")
+    
+    status = "🎤 **Enabled**" if enabled else "🔇 **Disabled**"
+    model_status = "✅ Loaded" if whisper_model else "⏳ Not loaded"
+    
+    await update.message.reply_text(
+        f"STT Status: {status}\n"
+        f"Language: {language}\n"
+        f"Whisper Model ({WHISPER_MODEL_SIZE}): {model_status}",
+        parse_mode='Markdown'
+    )
+
 # --- Main Function ---
 def main() -> None:
     # Ensure necessary directories/files exist (optional, helps first run)
@@ -2413,6 +2954,16 @@ def main() -> None:
         CommandHandler("callstatus", check_proactive_calls_status),
         CommandHandler("callquiet", set_call_quiet_hours),
         CommandHandler("callconfig", configure_call_settings),
+
+        # TTS/STT Commands (Admin)
+        CommandHandler("ttson", ttson),
+        CommandHandler("ttsoff", ttsoff),
+        CommandHandler("ttsconfig", ttsconfig),
+        CommandHandler("ttsstatus", ttsstatus),
+        CommandHandler("stton", stton),
+        CommandHandler("sttoff", sttoff),
+        CommandHandler("sttconfig", sttconfig),
+        CommandHandler("sttstatus", sttstatus),
 
         # Moderation Commands (Admin & Mod Enabled)
         CommandHandler("ban", ban_user), CommandHandler("mute", mute_user),
