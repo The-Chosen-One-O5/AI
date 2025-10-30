@@ -24,6 +24,9 @@ from rdkit.Chem.Draw import rdMolDraw2D
 from PIL import Image
 from bs4 import BeautifulSoup
 from telegraph import Telegraph
+from telegram import Update, ChatPermissions, InputFile, ReactionTypeEmoji
+from telegram.ext import Application, CommandHandler, MessageHandler, PollAnswerHandler, ContextTypes, filters
+from telegram.error import BadRequest
 from flask import Flask # Needed for keep_alive
 
 # --- TTS/STT Imports ---
@@ -41,13 +44,6 @@ from pytgcalls import PyTgCalls, StreamType
 from pytgcalls.types.input_stream import AudioPiped, AudioVideoPiped
 from pytgcalls.types.input_stream.quality import HighQualityAudio
 from telethon import TelegramClient
-
-# --- Telethon Imports (Replaces python-telegram-bot) ---
-from telethon import TelegramClient, events, types, functions, errors
-from telethon.tl.functions.channels import EditBannedRequest
-from telethon.tl.types import ChatBannedRights, ChannelParticipantsAdmins
-from telethon.tl.functions.messages import SendReactionRequest
-
 
 # --- Keep Alive Server Setup ---
 keep_alive_app = Flask('')
@@ -148,134 +144,6 @@ MOTIVATIONAL_QUOTES = [
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
-# ================== TELETHON CONTEXT WRAPPER ==================
-# Provides python-telegram-bot-like interface using Telethon
-
-class BotContext:
-    """Context wrapper providing bot functionality"""
-    def __init__(self, client):
-        self.client = client
-        self.bot = BotAPI(client)
-        self.job_queue = JobQueue(client)
-        self.id = None
-    async def initialize(self):
-        me = await self.client.get_me()
-        self.id = me.id
-        self.bot.id = me.id
-
-class BotAPI:
-    """Bot API wrapper mimicking python-telegram-bot"""
-    def __init__(self, client):
-        self.client = client
-        self.id = None
-    async def send_message(self, chat_id, text, parse_mode=None, reply_to_message_id=None):
-        pm = 'md' if parse_mode == 'Markdown' else ('html' if parse_mode == 'HTML' else None)
-        return await self.client.send_message(chat_id, text, parse_mode=pm, reply_to=reply_to_message_id)
-    async def send_photo(self, chat_id, photo, caption=None, parse_mode=None, reply_to_message_id=None):
-        pm = 'md' if parse_mode == 'Markdown' else ('html' if parse_mode == 'HTML' else None)
-        return await self.client.send_file(chat_id, photo, caption=caption, parse_mode=pm, reply_to=reply_to_message_id)
-    async def send_voice(self, chat_id, voice, caption=None, reply_to_message_id=None):
-        return await self.client.send_file(chat_id, voice, voice_note=True, caption=caption, reply_to=reply_to_message_id)
-    async def send_video(self, chat_id, video, caption=None, parse_mode=None, reply_to_message_id=None, **kwargs):
-        pm = 'md' if parse_mode == 'Markdown' else None
-        return await self.client.send_file(chat_id, video, caption=caption, parse_mode=pm, reply_to=reply_to_message_id)
-    async def send_sticker(self, chat_id, sticker):
-        return await self.client.send_file(chat_id, sticker)
-    async def send_poll(self, chat_id, question, options, type='quiz', correct_option_id=None, is_anonymous=False, open_period=None):
-        quiz = (type == 'quiz')
-        return await self.client.send_message(chat_id, question, poll=types.InputMediaPoll(
-            poll=types.Poll(id=0, question=question,
-                          answers=[types.PollAnswer(text=opt, option=bytes([i])) for i, opt in enumerate(options)],
-                          closed=False, public_voters=not is_anonymous, quiz=quiz, close_period=open_period),
-            correct_answers=[bytes([correct_option_id])] if quiz and correct_option_id is not None else None))
-    async def edit_message_text(self, text, chat_id, message_id, parse_mode=None):
-        pm = 'md' if parse_mode == 'Markdown' else ('html' if parse_mode == 'HTML' else None)
-        return await self.client.edit_message(chat_id, message_id, text, parse_mode=pm)
-    async def delete_message(self, chat_id, message_id):
-        return await self.client.delete_messages(chat_id, [message_id])
-    async def get_chat_administrators(self, chat_id):
-        try:
-            return await self.client.get_participants(chat_id, filter=ChannelParticipantsAdmins)
-        except: return []
-    async def set_message_reaction(self, chat_id, message_id, reaction):
-        emoji_reaction = reaction[0].emoji if hasattr(reaction[0], 'emoji') else str(reaction[0])
-        await self.client(SendReactionRequest(peer=chat_id, msg_id=message_id,
-                                            reaction=[types.ReactionEmoji(emoticon=emoji_reaction)]))
-    async def ban_chat_member(self, chat_id, user_id):
-        await self.client(EditBannedRequest(channel=chat_id, participant=user_id,
-            banned_rights=ChatBannedRights(until_date=None, view_messages=True)))
-    async def restrict_chat_member(self, chat_id, user_id, permissions):
-        await self.client(EditBannedRequest(channel=chat_id, participant=user_id,
-            banned_rights=ChatBannedRights(until_date=None,
-                send_messages=not getattr(permissions, 'can_send_messages', True),
-                send_media=not getattr(permissions, 'can_send_media_messages', True),
-                send_stickers=not getattr(permissions, 'can_send_other_messages', True),
-                send_polls=not getattr(permissions, 'can_send_polls', True),
-                invite_users=not getattr(permissions, 'can_invite_users', True))))
-    async def set_chat_permissions(self, chat_id, permissions):
-        await self.client.edit_permissions(chat_id,
-            send_messages=getattr(permissions, 'can_send_messages', True),
-            send_media=getattr(permissions, 'can_send_media_messages', True),
-            send_polls=getattr(permissions, 'can_send_polls', True),
-            invite_users=getattr(permissions, 'can_invite_users', True))
-
-class JobQueue:
-    """Job queue using asyncio"""
-    def __init__(self, client):
-        self.client = client
-        self.jobs = {}
-    def run_once(self, callback, when, data=None, name=None):
-        async def job_wrapper():
-            await asyncio.sleep(when)
-            job_data = type('JobData', (), {'data': data, 'name': name})()
-            context_obj = type('Context', (), {'job': job_data, 'bot': global_global_context.bot})()
-            await callback(context_obj)
-            if name and name in self.jobs: del self.jobs[name]
-        task = asyncio.create_task(job_wrapper())
-        if name: self.jobs[name] = task
-        return task
-    def run_daily(self, callback, time, data=None, name=None):
-        async def daily_wrapper():
-            while True:
-                now = datetime.now(time.tzinfo)
-                target = now.replace(hour=time.hour, minute=time.minute, second=0, microsecond=0)
-                if target <= now:
-                    from datetime import timedelta
-                    target = target + timedelta(days=1)
-                delay = (target - now).total_seconds()
-                await asyncio.sleep(delay)
-                job_data = type('JobData', (), {'data': data, 'name': name})()
-                context_obj = type('Context', (), {'job': job_data, 'bot': global_global_context.bot})()
-                await callback(context_obj)
-        task = asyncio.create_task(daily_wrapper())
-        if name: self.jobs[name] = task
-        return task
-    def get_jobs_by_name(self, name):
-        return [self.jobs[name]] if name in self.jobs else []
-
-class ChatPermissions:
-    """Chat permissions"""
-    def __init__(self, can_send_messages=False, can_send_media_messages=False, 
-                 can_send_polls=False, can_send_other_messages=False, 
-                 can_add_web_page_previews=False, can_invite_users=False):
-        self.can_send_messages = can_send_messages
-        self.can_send_media_messages = can_send_media_messages
-        self.can_send_polls = can_send_polls
-        self.can_send_other_messages = can_send_other_messages
-        self.can_add_web_page_previews = can_add_web_page_previews
-        self.can_invite_users = can_invite_users
-
-class ReactionTypeEmoji:
-    """Reaction emoji"""
-    def __init__(self, emoji):
-        self.emoji = emoji
-
-global_context = None
-
-# ================== END CONTEXT WRAPPER ==================
-
-
 # --- Config & Memory Persistence ---
 def load_config() -> dict:
     try:
@@ -328,23 +196,23 @@ def save_gossip(gossip: dict) -> None:
 async def delete_message_callback(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
     try:
-        await global_context.bot.delete_message(chat_id=job.data['chat_id'], message_id=job.data['message_id'])
-    except errors.RPCError: pass # Ignore if message already deleted
+        await context.bot.delete_message(chat_id=job.data['chat_id'], message_id=job.data['message_id'])
+    except BadRequest: pass # Ignore if message already deleted
 
-async def send_deletable_message(chat_id: int, text: str, reply_to_message_id: int = None):
-    """Send a message that will be deleted after 120 seconds"""
+async def send_deletable_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str, reply_to_message_id: int | None = None):
     try:
-        sent_message = await global_context.bot.send_message(chat_id=chat_id, text=text, reply_to_message_id=reply_to_message_id, parse_mode='Markdown')
-        global_context.job_queue.run_once(delete_message_callback, 120, data={'chat_id': chat_id, 'message_id': sent_message.id})
+        sent_message = await context.bot.send_message(chat_id=chat_id, text=text, reply_to_message_id=reply_to_message_id, parse_mode='Markdown')
+        context.job_queue.run_once(delete_message_callback, 120, data={'chat_id': chat_id, 'message_id': sent_message.message_id})
         return sent_message
-    except errors.RPCError as e:
-        logger.error(f"Failed to send deletable message (Markdown error?): {e}")
+    except BadRequest as e:
+        logger.error(f"Failed to send deletable message (Markdown maybe?): {e}")
+        # Fallback to plain text if Markdown fails
         try:
-            sent_message = await global_context.bot.send_message(chat_id=chat_id, text=text, reply_to_message_id=reply_to_message_id)
-            global_context.job_queue.run_once(delete_message_callback, 120, data={'chat_id': chat_id, 'message_id': sent_message.id})
+            sent_message = await context.bot.send_message(chat_id=chat_id, text=text, reply_to_message_id=reply_to_message_id)
+            context.job_queue.run_once(delete_message_callback, 120, data={'chat_id': chat_id, 'message_id': sent_message.message_id})
             return sent_message
         except Exception as e2:
-            logger.error(f"Failed to send deletable message as plain text: {e2}")
+            logger.error(f"Failed to send deletable message even as plain text: {e2}")
             return None # Indicate failure
 
 
@@ -1044,7 +912,7 @@ def create_telegraph_page(title: str, content: str, config: dict) -> str | None:
         logger.error(f"Failed to create Telegraph page: {e}")
         return None
 
-async def send_final_response(event, response_text: str | None, thinking_message, prompt_title: str):
+async def send_final_response(update: Update, context: ContextTypes.DEFAULT_TYPE, response_text: str | None, thinking_message, prompt_title: str):
     if not response_text:
         try:
             error_message = (
@@ -1055,82 +923,75 @@ async def send_final_response(event, response_text: str | None, thinking_message
                 "• Network issues\n\n"
                 "Please try again in a few moments."
             )
-            await global_context.bot.edit_message_text(error_message, chat_id=event.chat_id, message_id=thinking_message.message_id)
-        except errors.RPCError: pass # Ignore if original message deleted
+            await context.bot.edit_message_text(error_message, chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
+        except BadRequest: pass # Ignore if original message deleted
         return
 
     config = load_config()
-    chat_id = str(event.chat_id)
+    chat_id = str(update.message.chat_id)
     is_audio_mode = config.get("audio_mode_config", {}).get(chat_id, False)
 
     if is_audio_mode:
         try:
-            await global_context.bot.edit_message_text("🎤 Generating audio...", chat_id=event.chat_id, message_id=thinking_message.message_id)
-        except errors.RPCError: pass # Ignore if original message deleted
+            await context.bot.edit_message_text("🎤 Generating audio...", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
+        except BadRequest: pass # Ignore if original message deleted
 
         audio_bytes = await generate_audio_from_text(response_text)
         if audio_bytes:
             try:
-                await global_context.bot.send_voice(chat_id=event.chat_id, voice=audio_bytes)
+                await context.bot.send_voice(chat_id=update.effective_chat.id, voice=audio_bytes)
                 # Delete thinking message after sending audio
                 try: await thinking_message.delete()
-                except errors.RPCError: pass
+                except BadRequest: pass
             except Exception as e:
                  logger.error(f"Failed to send voice message: {e}")
                  # Fallback to text if sending voice fails
                  try:
-                     await global_context.bot.edit_message_text("Failed to send audio, sending text.", chat_id=event.chat_id, message_id=thinking_message.message_id)
-                 except errors.RPCError: pass
+                     await context.bot.edit_message_text("Failed to send audio, sending text.", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
+                 except BadRequest: pass
                  await send_or_telegraph_fallback(update, context, response_text, thinking_message, prompt_title)
         else:
             try:
-                await global_context.bot.edit_message_text("Audio generation failed, sending text.", chat_id=event.chat_id, message_id=thinking_message.message_id)
-            except errors.RPCError: pass
+                await context.bot.edit_message_text("Audio generation failed, sending text.", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
+            except BadRequest: pass
             await send_or_telegraph_fallback(update, context, response_text, thinking_message, prompt_title)
     else:
         # Send as text or telegraph page
         await send_or_telegraph_fallback(update, context, response_text, thinking_message, prompt_title)
 
-async def send_or_telegraph_fallback(event, response_text: str, thinking_message, prompt_title: str):
+async def send_or_telegraph_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE, response_text: str, thinking_message, prompt_title: str):
     try:
         if len(response_text) > 4000:
-            await global_context.bot.edit_message_text("Response too long, creating Telegraph page...", chat_id=event.chat_id, message_id=thinking_message.message_id)
+            await context.bot.edit_message_text("Response too long, creating Telegraph page...", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
             # Run blocking telegraph creation in a separate thread
             url = await asyncio.to_thread(create_telegraph_page, prompt_title, response_text, load_config())
             final_message = f"The response was too long. I've posted it here:\n{url}" if url else f"Response too long, and failed to post to Telegraph. Truncated:\n\n{response_text[:3800]}..."
-            await global_context.bot.edit_message_text(final_message, chat_id=event.chat_id, message_id=thinking_message.message_id)
+            await context.bot.edit_message_text(final_message, chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
         else:
             # Try sending with Markdown, fall back to plain text if it fails
             try:
-                await global_context.bot.edit_message_text(response_text, chat_id=event.chat_id, message_id=thinking_message.message_id, parse_mode='Markdown')
-            except errors.RPCError:
+                await context.bot.edit_message_text(response_text, chat_id=update.effective_chat.id, message_id=thinking_message.message_id, parse_mode='Markdown')
+            except BadRequest:
                 logger.warning("Markdown parsing failed, sending as plain text.")
-                await global_context.bot.edit_message_text(response_text, chat_id=event.chat_id, message_id=thinking_message.message_id)
-    except errors.RPCError as e:
+                await context.bot.edit_message_text(response_text, chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
+    except BadRequest as e:
          # Handle cases where the thinking_message might have been deleted already
          if "Message to edit not found" in str(e):
              logger.warning("Thinking message was likely deleted before final response.")
              # Optionally send response as a new message if edit fails
-             # await event.reply(response_text[:4000]) # Example
+             # await update.message.reply_text(response_text[:4000]) # Example
          else:
              logger.error(f"Failed to edit message: {e}")
     except Exception as e:
          logger.error(f"Unexpected error in send_or_telegraph_fallback: {e}")
 
 
-async def is_user_admin(chat_id: int, user_id: int) -> bool:
-    """Check if user is admin using Telethon"""
-    if chat_id > 0: return False  # No admins in private chats
+async def is_user_admin(chat_id: int, user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    if chat_id > 0: return False # No admins in private chats
     try:
-        chat_admins = await global_context.bot.get_chat_administrators(chat_id)
-        return any(admin.id == user_id for admin in chat_admins)
-    except errors.RPCError:
-        logger.warning(f"Could not get admins for chat {chat_id}. Assuming user {user_id} is not admin.")
-        return False # No admins in private chats
-    try:
-        chat_admins = await global_context.bot.get_chat_administrators(chat_id)
+        chat_admins = await context.bot.get_chat_administrators(chat_id)
         return any(admin.user.id == user_id for admin in chat_admins)
-    except errors.RPCError:
+    except BadRequest:
         logger.warning(f"Could not get admins for chat {chat_id}. Assuming user {user_id} is not admin.")
         return False
 
@@ -1206,8 +1067,8 @@ async def call_groq_lpu_api(messages: list) -> str | None:
             logger.warning("Groq API returned empty content.")
             return None
 
-    except errors.RPCErrorError as e:
-        logger.error(f"Groq API errors.RPCErrorError (possibly deprecated model): {e}")
+    except BadRequestError as e:
+        logger.error(f"Groq API BadRequestError (possibly deprecated model): {e}")
         return None
     except Exception as e:
         logger.warning(f"Groq API failed with exception: {e}", exc_info=True)
@@ -1231,7 +1092,7 @@ async def call_chatanywhere_api(messages: list) -> str | None:
                     logger.info(f"ChatAnywhere API returned response: {len(response_content)} chars")
                     return response_content
             elif response.status_code == 400:
-                logger.error(f"ChatAnywhere API errors.RPCError (possibly deprecated model): {response.text}")
+                logger.error(f"ChatAnywhere API BadRequest (possibly deprecated model): {response.text}")
             else:
                 logger.warning(f"ChatAnywhere API failed with status {response.status_code}: {response.text}")
     except httpx.TimeoutException:
@@ -1555,7 +1416,7 @@ def should_auto_join_call(chat_id: str, participant_count: int = 0) -> bool:
     
     return True
 
-async def generate_call_response(chat_id: str) -> str | None:
+async def generate_call_response(chat_id: str, context: ContextTypes.DEFAULT_TYPE) -> str | None:
     """Generate contextual AI response based on call transcript and chat history."""
     call_state = active_calls.get(chat_id)
     if not call_state:
@@ -1598,12 +1459,12 @@ async def generate_call_response(chat_id: str) -> str | None:
     
     return None
 
-async def handle_call_audio(event):
+async def handle_call_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle voice messages in active calls for transcription and response with TTS/STT."""
-    if not update.message or not event.voice:
+    if not update.message or not update.message.voice:
         return
     
-    chat_id = str(event.chat_id)
+    chat_id = str(update.message.chat_id)
     chat_id_int = int(chat_id)
     
     # Check if this chat has proactive calls or STT enabled
@@ -1629,7 +1490,7 @@ async def handle_call_audio(event):
     
     try:
         # Download and transcribe audio
-        voice_file = await event.voice.get_file()
+        voice_file = await update.message.voice.get_file()
         audio_bytes = await voice_file.download_as_bytearray()
         
         # Use configured STT language or default to English
@@ -1638,7 +1499,7 @@ async def handle_call_audio(event):
         
         if transcription:
             # Add to transcript with timestamp
-            user_name = event.sender.first_name or "User"
+            user_name = update.message.from_user.first_name
             timestamp = datetime.now().strftime("%H:%M:%S")
             call_state["transcript"].append(f"[{timestamp}] {user_name}: {transcription}")
             logger.info(f"[{timestamp}] Transcribed - {user_name}: {transcription[:50]}...")
@@ -1671,16 +1532,16 @@ async def handle_call_audio(event):
                                     temp_path = temp_file.name
                                 
                                 try:
-                                    await global_context.bot.send_voice(chat_id=chat_id_int, voice=open(temp_path, 'rb'))
+                                    await context.bot.send_voice(chat_id=chat_id_int, voice=open(temp_path, 'rb'))
                                 finally:
                                     if os.path.exists(temp_path):
                                         os.unlink(temp_path)
                             else:
                                 # Ultimate fallback to text
-                                await global_context.bot.send_message(chat_id=chat_id_int, text=response)
+                                await context.bot.send_message(chat_id=chat_id_int, text=response)
                     else:
                         # Send text response
-                        await global_context.bot.send_message(chat_id=chat_id_int, text=response)
+                        await context.bot.send_message(chat_id=chat_id_int, text=response)
         else:
             # Track transcription failures
             call_state["error_count"] = call_state.get("error_count", 0) + 1
@@ -1688,7 +1549,7 @@ async def handle_call_audio(event):
             # If too many errors, warn and potentially disable
             if call_state["error_count"] >= 5:
                 logger.warning(f"Too many transcription errors in chat {chat_id}, may need intervention")
-                await global_context.bot.send_message(
+                await context.bot.send_message(
                     chat_id=chat_id_int,
                     text="⚠️ I'm having trouble hearing the call. Check /sttconfig or /callleave."
                 )
@@ -1699,7 +1560,7 @@ async def handle_call_audio(event):
         call_state["error_count"] = call_state.get("error_count", 0) + 1
 
 # --- Trivia System ---
-async def poll_answer_handler(event):
+async def poll_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles user answers to the bot's trivia quiz polls."""
     answer = update.poll_answer
     # Find the chat session associated with this poll ID
@@ -1820,16 +1681,16 @@ async def get_new_trivia_question(context: ContextTypes.DEFAULT_TYPE, topic: str
         logger.error(f"Failed to parse trivia poll question: {e}\nResponse: {response_text}")
     return None
 
-async def start_trivia(event, topic: str, question_count: int):
-    chat_id = str(event.chat_id)
+async def start_trivia(update: Update, context: ContextTypes.DEFAULT_TYPE, topic: str, question_count: int):
+    chat_id = str(update.message.chat_id)
     if trivia_sessions.get(chat_id, {}).get("state") in ["registering", "asking"]:
-        await event.reply("A game is already in progress!")
+        await update.message.reply_text("A game is already in progress!")
         return
 
     intro_text = (f"Alright, trivia time! 🔥 **{question_count}** rounds on **{topic}**.\n\n"
                   "Who's playing? Reply to this message with `me` to join.\n"
                   "When ready, someone reply `all in` to start!")
-    intro_message = await event.reply(intro_text, parse_mode='Markdown')
+    intro_message = await update.message.reply_text(intro_text, parse_mode='Markdown')
     if not intro_message: # Handle case where sending message fails
          logger.error(f"Failed to send trivia intro message in chat {chat_id}")
          return
@@ -1867,7 +1728,7 @@ async def ask_next_trivia_question(context: ContextTypes.DEFAULT_TYPE, chat_id: 
 
     try:
         # Send the quiz poll - 60 second time limit
-        poll_message = await global_context.bot.send_poll(
+        poll_message = await context.bot.send_poll(
             chat_id=int(chat_id),
             question=f"Q{session['current_question_num']}/{session['total_questions']}: {question_text}",
             options=options,
@@ -1880,7 +1741,7 @@ async def ask_next_trivia_question(context: ContextTypes.DEFAULT_TYPE, chat_id: 
         session["state"] = "polling" # Update state
 
         # Schedule job to process results after poll closes + small buffer
-        global_context.job_queue.run_once(
+        context.job_queue.run_once(
              process_poll_end_callback,
              62, # open_period + buffer
              data={'chat_id': chat_id, 'expected_poll_id': poll_message.poll.id},
@@ -1905,7 +1766,7 @@ async def end_trivia(context: ContextTypes.DEFAULT_TYPE, chat_id: str, reason: s
         leaderboard += "No scores recorded."
 
     try:
-        await global_context.bot.send_message(int(chat_id), leaderboard, parse_mode='Markdown')
+        await context.bot.send_message(int(chat_id), leaderboard, parse_mode='Markdown')
     except Exception as e:
          logger.error(f"Failed to send final leaderboard: {e}")
     if chat_id in trivia_sessions:
@@ -1913,31 +1774,31 @@ async def end_trivia(context: ContextTypes.DEFAULT_TYPE, chat_id: str, reason: s
 
 # --- Master Handlers ---
 
-async def smart_ai_handler(event) -> None:
+async def smart_ai_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Ensure update and message exist
-    if not update.message or not event.text:
+    if not update.message or not update.message.text:
         return
 
-    prompt = " ".join(event.text.split()[1:])
+    prompt = " ".join(context.args)
     if not prompt:
-        await event.reply("Please provide a prompt after /ai.")
+        await update.message.reply_text("Please provide a prompt after /ai.")
         return
 
-    chat_id_str = str(event.chat_id)
+    chat_id_str = str(update.message.chat_id)
     config = load_config()
     # Check if AI features are enabled for this chat
     if not config.get("ai_enabled_config", {}).get(chat_id_str, False):
-        await event.reply("AI features are currently disabled in this group. Ask an admin to use `/boton`.")
+        await update.message.reply_text("AI features are currently disabled in this group. Ask an admin to use `/boton`.")
         return
 
-    thinking_message = await event.reply("Processing...")
+    thinking_message = await update.message.reply_text("Processing...")
 
     try:
         # Trivia control commands (Admin only)
         trivia_match = re.search(r'start trivia(?: on (.+?))?(?: (\d+)Q)?$', prompt, re.IGNORECASE)
         if trivia_match:
-            if not await is_user_admin(event.chat_id, event.sender.id):
-                 await global_context.bot.edit_message_text("Only admins can start trivia games.", chat_id=event.chat_id, message_id=thinking_message.message_id)
+            if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+                 await context.bot.edit_message_text("Only admins can start trivia games.", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
                  return
             topic = (trivia_match.group(1) or "general knowledge").strip()
             q_count = int(trivia_match.group(2) or 5)
@@ -1946,51 +1807,51 @@ async def smart_ai_handler(event) -> None:
             return
             
         if "stop trivia" in prompt.lower():
-            if not await is_user_admin(event.chat_id, event.sender.id):
-                 await global_context.bot.edit_message_text("Only admins can stop trivia games.", chat_id=event.chat_id, message_id=thinking_message.message_id)
+            if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+                 await context.bot.edit_message_text("Only admins can stop trivia games.", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
                  return
             if chat_id_str in trivia_sessions and trivia_sessions[chat_id_str].get("state") != "inactive":
                 await thinking_message.delete()
                 await end_trivia(context, chat_id_str, "The game was stopped early by an admin.")
             else:
-                await global_context.bot.edit_message_text("No trivia game is currently running.", chat_id=event.chat_id, message_id=thinking_message.message_id)
+                await context.bot.edit_message_text("No trivia game is currently running.", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
             return
 
         # Gossip Memory commands
-        if event.reply_to_msg_id and await event.get_reply_message() and ("remember this" in prompt.lower()):
-            replied = event.reply_to_msg_id and await event.get_reply_message()
+        if update.message.reply_to_message and ("remember this" in prompt.lower()):
+            replied = update.message.reply_to_message
             if replied.text:
                 gossip = load_gossip()
                 gossip.setdefault(chat_id_str, []).append({
-                    "author": replied.from_user.first_name or "User",
-                    "author_username": replied.from_user.username or "",
+                    "author": replied.from_user.first_name,
+                    "author_username": replied.from_user.username,
                     "text": replied.text,
-                    "saved_by": event.sender.first_name or "User",
+                    "saved_by": update.message.from_user.first_name,
                     "timestamp": datetime.now().isoformat()
                 })
                 save_gossip(gossip)
-                await global_context.bot.edit_message_text("Alright, I'll remember that one.", chat_id=event.chat_id, message_id=thinking_message.message_id)
+                await context.bot.edit_message_text("Alright, I'll remember that one.", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
             else:
-                await global_context.bot.edit_message_text("I can only remember text messages.", chat_id=event.chat_id, message_id=thinking_message.message_id)
+                await context.bot.edit_message_text("I can only remember text messages.", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
             return
 
         if "gossip" in prompt.lower():
             gossip_list = load_gossip().get(chat_id_str, [])
             if gossip_list:
                 random_gossip = random.choice(gossip_list)
-                await global_context.bot.edit_message_text(f"Remember when {random_gossip['author']} said: \"{random_gossip['text']}\"?", chat_id=event.chat_id, message_id=thinking_message.message_id)
+                await context.bot.edit_message_text(f"Remember when {random_gossip['author']} said: \"{random_gossip['text']}\"?", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
             else:
-                await global_context.bot.edit_message_text("Nothing juicy to share yet.", chat_id=event.chat_id, message_id=thinking_message.message_id)
+                await context.bot.edit_message_text("Nothing juicy to share yet.", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
             return
 
         # Sticker creation command
         if "sticker of" in prompt.lower():
             sticker_prompt = re.sub(r'(?i)sticker of\s*', '', prompt).strip()
             if not sticker_prompt:
-                await global_context.bot.edit_message_text("What kind of sticker? Usage: `/ai sticker of a happy cat`", chat_id=event.chat_id, message_id=thinking_message.message_id)
+                await context.bot.edit_message_text("What kind of sticker? Usage: `/ai sticker of a happy cat`", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
                 return
 
-            await global_context.bot.edit_message_text(f"🎨 Creating sticker: `{sticker_prompt}`...", chat_id=event.chat_id, message_id=thinking_message.message_id)
+            await context.bot.edit_message_text(f"🎨 Creating sticker: `{sticker_prompt}`...", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
             
             # Generate image using Samurai API
             image_bytes = await generate_sticker_image(sticker_prompt)
@@ -2001,35 +1862,35 @@ async def smart_ai_handler(event) -> None:
                 
                 if sticker_bytes:
                     try:
-                        await global_context.bot.send_sticker(
-                            chat_id=event.chat_id, 
+                        await context.bot.send_sticker(
+                            chat_id=update.effective_chat.id, 
                             sticker=sticker_bytes
                         )
                         await thinking_message.delete()
-                    except errors.RPCError as e:
+                    except BadRequest as e:
                         logger.error(f"Failed to send sticker: {e}")
-                        await global_context.bot.edit_message_text(
+                        await context.bot.edit_message_text(
                             f"Failed to send sticker: {e.message}", 
-                            chat_id=event.chat_id, 
+                            chat_id=update.effective_chat.id, 
                             message_id=thinking_message.message_id
                         )
                     except Exception as e:
                         logger.error(f"Unexpected error sending sticker: {e}")
-                        await global_context.bot.edit_message_text(
+                        await context.bot.edit_message_text(
                             "An unexpected error occurred sending the sticker.", 
-                            chat_id=event.chat_id, 
+                            chat_id=update.effective_chat.id, 
                             message_id=thinking_message.message_id
                         )
                 else:
-                    await global_context.bot.edit_message_text(
+                    await context.bot.edit_message_text(
                         "Failed to convert image to sticker format.", 
-                        chat_id=event.chat_id, 
+                        chat_id=update.effective_chat.id, 
                         message_id=thinking_message.message_id
                     )
             else:
-                await global_context.bot.edit_message_text(
+                await context.bot.edit_message_text(
                     "Failed to generate the sticker image.", 
-                    chat_id=event.chat_id, 
+                    chat_id=update.effective_chat.id, 
                     message_id=thinking_message.message_id
                 )
             return  # Sticker generation finished
@@ -2038,29 +1899,29 @@ async def smart_ai_handler(event) -> None:
         if "video of" in prompt.lower() or "make a video of" in prompt.lower():
             video_prompt = re.sub(r'(?i)(make a )?video of\s*', '', prompt).strip()
             if not video_prompt:
-                await global_context.bot.edit_message_text("What kind of video? Usage: `/ai video of a cat chasing a laser`", chat_id=event.chat_id, message_id=thinking_message.message_id)
+                await context.bot.edit_message_text("What kind of video? Usage: `/ai video of a cat chasing a laser`", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
                 return
 
-            await global_context.bot.edit_message_text(f"🎬 Generating video: `{video_prompt}` (This may take a while)...", chat_id=event.chat_id, message_id=thinking_message.message_id)
+            await context.bot.edit_message_text(f"🎬 Generating video: `{video_prompt}` (This may take a while)...", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
             video_bytes = await generate_video_from_text(video_prompt)
 
             if video_bytes:
                 try:
                     # Sending the video
-                    await global_context.bot.send_video(chat_id=event.chat_id, video=video_bytes, caption=f"🎥 Video for: `{video_prompt}`", read_timeout=300, write_timeout=300, connect_timeout=300) # Add timeouts
+                    await context.bot.send_video(chat_id=update.effective_chat.id, video=video_bytes, caption=f"🎥 Video for: `{video_prompt}`", read_timeout=300, write_timeout=300, connect_timeout=300) # Add timeouts
                     await thinking_message.delete()
-                except errors.RPCError as e:
+                except BadRequest as e:
                     logger.error(f"Failed to send video: {e}")
-                    await global_context.bot.edit_message_text(f"Failed to send video: {e.message}", chat_id=event.chat_id, message_id=thinking_message.message_id)
+                    await context.bot.edit_message_text(f"Failed to send video: {e.message}", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
                 except Exception as e:
                      logger.error(f"Unexpected error sending video: {e}")
-                     await global_context.bot.edit_message_text("An unexpected error occurred sending the video.", chat_id=event.chat_id, message_id=thinking_message.message_id)
+                     await context.bot.edit_message_text("An unexpected error occurred sending the video.", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
             else:
-                await global_context.bot.edit_message_text("Failed to generate the video.", chat_id=event.chat_id, message_id=thinking_message.message_id)
+                await context.bot.edit_message_text("Failed to generate the video.", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
             return # Video generation finished
         
         # Default action: Web Search + AI Answer
-        await global_context.bot.edit_message_text("🔎 Searching the web...", chat_id=event.chat_id, message_id=thinking_message.message_id)
+        await context.bot.edit_message_text("🔎 Searching the web...", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
         search_results = await execute_web_search(prompt)
         
         # Construct a more detailed prompt for the AI
@@ -2072,23 +1933,23 @@ async def smart_ai_handler(event) -> None:
         )
         messages = [{"role": "system", "content": persona_prompt}, {"role": "user", "content": final_prompt}]
         
-        await global_context.bot.edit_message_text("🧠 Thinking...", chat_id=event.chat_id, message_id=thinking_message.message_id)
+        await context.bot.edit_message_text("🧠 Thinking...", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
         response = await get_typegpt_response(messages)
         await send_final_response(update, context, response, thinking_message, prompt)
 
     except Exception as e:
         logger.error(f"Smart AI Handler failed catastrophically: {e}", exc_info=True)
         try:
-            await global_context.bot.edit_message_text("An unexpected error occurred processing your request.", chat_id=event.chat_id, message_id=thinking_message.message_id)
-        except errors.RPCError: pass # Ignore if original message deleted
+            await context.bot.edit_message_text("An unexpected error occurred processing your request.", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
+        except BadRequest: pass # Ignore if original message deleted
 
 
-async def master_text_handler(event) -> None:
+async def master_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Ensure message and text exist before proceeding
-    if not update.message or not event.text:
+    if not update.message or not update.message.text:
         return
 
-    chat_id = str(event.chat_id)
+    chat_id = str(update.message.chat_id)
     session = trivia_sessions.get(chat_id)
 
     # --- LOCKDOWN MODE: If trivia is active, only game logic runs ---
@@ -2100,11 +1961,11 @@ async def master_text_handler(event) -> None:
     config = load_config()
     # Check if AI features are enabled for this chat before processing replies/mentions
     if config.get("ai_enabled_config", {}).get(chat_id, False):
-        if event.reply_to_msg_id and await event.get_reply_message() and event.reply_to_msg_id and await event.get_reply_message().from_user and event.reply_to_msg_id and await event.get_reply_message().from_user.id == global_context.bot.id:
+        if update.message.reply_to_message and update.message.reply_to_message.from_user and update.message.reply_to_message.from_user.id == context.bot.id:
             await reply_handler(update, context)
             return
 
-        if re.search(r'(?i)\bAI618\b', event.text):
+        if re.search(r'(?i)\bAI618\b', update.message.text):
             await name_mention_handler(update, context)
             return
 
@@ -2113,31 +1974,31 @@ async def master_text_handler(event) -> None:
     await history_capture_handler(update, context) # Always capture history
 
 
-async def trivia_master_handler(event) -> bool:
+async def trivia_master_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Handles player registration ('me', 'all in') during the registration phase."""
-    chat_id = str(event.chat_id)
+    chat_id = str(update.message.chat_id)
     session = trivia_sessions.get(chat_id)
 
     # Only act during registration state
     if not session or session.get("state") != "registering":
         return False
 
-    user = event.sender
-    text = event.text.lower().strip()
+    user = update.message.from_user
+    text = update.message.text.lower().strip()
 
     # Check if it's a reply to the registration message
-    if event.reply_to_msg_id and await event.get_reply_message() and event.reply_to_msg_id and await event.get_reply_message().message_id == session.get("registration_message_id"):
+    if update.message.reply_to_message and update.message.reply_to_message.message_id == session.get("registration_message_id"):
         if text == 'me':
             if user.id not in session["players"]:
-                session["players"][user.id] = {"username": user.username or "", "first_name": user.first_name or "User", "score": 0}
-                await event.reply(f"{user.first_name or "User"} is in! ✅")
+                session["players"][user.id] = {"username": user.username, "first_name": user.first_name, "score": 0}
+                await update.message.reply_text(f"{user.first_name} is in! ✅")
             else:
-                await event.reply("You're already in!")
+                await update.message.reply_text("You're already in!")
             return True # Message handled
 
         elif text == 'all in':
             if not session["players"]:
-                await event.reply("We need at least one player to start!")
+                await update.message.reply_text("We need at least one player to start!")
                 return True # Message handled
 
             # Get player names for announcement
@@ -2146,10 +2007,10 @@ async def trivia_master_handler(event) -> bool:
                 mention = f"@{p_data['username']}" if p_data['username'] else p_data['first_name']
                 player_list.append(mention)
 
-            await event.reply(f"Registration closed! Players: {', '.join(player_list)}. Let's begin!")
+            await update.message.reply_text(f"Registration closed! Players: {', '.join(player_list)}. Let's begin!")
             # Delete registration message
-            try: await global_context.bot.delete_message(chat_id, session["registration_message_id"])
-            except errors.RPCError: pass
+            try: await context.bot.delete_message(chat_id, session["registration_message_id"])
+            except BadRequest: pass
             
             # Start the game by asking the first question
             await ask_next_trivia_question(context, chat_id)
@@ -2157,60 +2018,60 @@ async def trivia_master_handler(event) -> bool:
             
     return False # Not a relevant registration message
 
-async def reply_handler(event):
+async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Ensure messages exist
-    if not update.message or not event.text or not event.reply_to_msg_id and await event.get_reply_message() or not event.reply_to_msg_id and await event.get_reply_message().text: return
+    if not update.message or not update.message.text or not update.message.reply_to_message or not update.message.reply_to_message.text: return
     
-    thinking_message = await event.reply("...")
+    thinking_message = await update.message.reply_text("...")
     # Use a consistent persona prompt
     persona = "You are AI618, a witty and clever AI. Respond in character."
     messages = [
         {"role": "system", "content": persona},
-        {"role": "assistant", "content": event.reply_to_msg_id and await event.get_reply_message().text},
-        {"role": "user", "content": event.text}
+        {"role": "assistant", "content": update.message.reply_to_message.text},
+        {"role": "user", "content": update.message.text}
     ]
     response = await get_typegpt_response(messages)
     await send_final_response(update, context, response, thinking_message, "AI Reply")
 
-async def name_mention_handler(event):
-    if not update.message or not event.text: return
+async def name_mention_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text: return
 
-    thinking_message = await event.reply("...")
+    thinking_message = await update.message.reply_text("...")
     persona = "You are AI618, a witty and clever AI. The user mentioned your name. Respond in character."
     messages = [
         {"role": "system", "content": persona},
-        {"role": "user", "content": event.text}
+        {"role": "user", "content": update.message.text}
     ]
     response = await get_typegpt_response(messages)
     await send_final_response(update, context, response, thinking_message, "AI Mention")
 
-async def proactive_reaction_handler(event):
+async def proactive_reaction_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Only react if AI is on for the group
     config = load_config()
-    chat_id = str(event.chat_id)
+    chat_id = str(update.message.chat_id)
     if not config.get("ai_enabled_config", {}).get(chat_id, False): return
-    if not update.message or not event.text: return
+    if not update.message or not update.message.text: return
 
     if random.random() < 0.45: # Reaction probability
-        emoji_str = await get_emoji_reaction(event.text)
+        emoji_str = await get_emoji_reaction(update.message.text)
         if emoji_str:
             try:
-                await global_context.bot.set_message_reaction(chat_id=event.chat_id, message_id=event.id, reaction=[ReactionTypeEmoji(emoji_str)])
+                await context.bot.set_message_reaction(chat_id=update.effective_chat.id, message_id=update.effective_message.id, reaction=[ReactionTypeEmoji(emoji_str)])
                 logger.info(f"Reacted with {emoji_str} in chat {chat_id}")
-            except errors.RPCError as e:
+            except BadRequest as e:
                 # Ignore common harmless errors or permission issues silently
                 if "MESSAGE_NOT_MODIFIED" not in e.message and "REACTION_INVALID" not in e.message and "USER_IS_BLOCKED" not in e.message and "chat not found" not in e.message:
                     logger.warning(f"Failed to set reaction: {e.message}")
             except Exception as e:
                  logger.error(f"Unexpected error setting reaction: {e}")
 
-async def history_capture_handler(event):
+async def history_capture_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Ensure message and text exist
-    if not update.message or not event.text: return
+    if not update.message or not update.message.text: return
 
-    chat_id = event.chat_id
+    chat_id = update.message.chat_id
     history = chat_histories.setdefault(chat_id, deque(maxlen=30)) # Store last 30 messages
-    history.append(f"{event.sender.first_name or "User"}: {event.text}")
+    history.append(f"{update.message.from_user.first_name}: {update.message.text}")
     
     # Schedule random chat only if AI is enabled AND random chat is enabled for this group
     config = load_config()
@@ -2218,14 +2079,14 @@ async def history_capture_handler(event):
     if config.get("ai_enabled_config", {}).get(chat_id_str, False) and \
        config.get("random_chat_config", {}).get(chat_id_str, True): # Default random ON if not set
         # Check existing jobs for this chat
-        current_jobs = global_context.job_queue.get_jobs_by_name(f"random_chat_{chat_id}")
+        current_jobs = context.job_queue.get_jobs_by_name(f"random_chat_{chat_id}")
         if not current_jobs: # Only schedule if no job exists
-             global_context.job_queue.run_once(random_chat_callback, random.uniform(300, 600), data={'chat_id': chat_id}, name=f"random_chat_{chat_id}")
+             context.job_queue.run_once(random_chat_callback, random.uniform(300, 600), data={'chat_id': chat_id}, name=f"random_chat_{chat_id}")
              # active_random_jobs isn't strictly needed now if we check get_jobs_by_name
              logger.info(f"Scheduled random chat job for chat_id: {chat_id}")
 
 async def random_chat_callback(context: ContextTypes.DEFAULT_TYPE):
-    chat_id = context.job.data.get('chat_id')
+    chat_id = context.job.data['chat_id']
     # No need for active_random_jobs tracking if we check get_jobs_by_name before scheduling
 
     config = load_config()
@@ -2249,9 +2110,9 @@ async def random_chat_callback(context: ContextTypes.DEFAULT_TYPE):
         response = await get_typegpt_response(messages)
         if response:
             try:
-                await global_context.bot.send_message(chat_id=chat_id, text=response)
+                await context.bot.send_message(chat_id=chat_id, text=response)
                 chat_histories[chat_id].clear() # Clear history after commenting
-            except errors.RPCError as e:
+            except BadRequest as e:
                 logger.error(f"Failed to send random chat message: {e}")
         else:
              logger.warning(f"Random chat AI failed to generate response for chat {chat_id}")
@@ -2259,9 +2120,7 @@ async def random_chat_callback(context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Skipping random chat for {chat_id}, not enough history.")
 
 
-
-
-async def help_command(event):
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Ensure message exists
     if not update.message: return
     help_text = (
@@ -2302,50 +2161,50 @@ async def help_command(event):
         "`/delete` (Reply to message)\n"
         "`/lock`, `/unlock` (Chat permissions)"
     )
-    await event.reply(help_text, parse_mode='Markdown')
+    await update.message.reply_text(help_text, parse_mode='Markdown')
 
-async def force_react_command(event):
+async def force_react_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Ensure message exists
     if not update.message: return
-    replied_message = event.reply_to_msg_id and await event.get_reply_message()
+    replied_message = update.message.reply_to_message
     if not replied_message or not replied_message.text:
-        await event.reply("Reply to a text message to react.")
+        await update.message.reply_text("Reply to a text message to react.")
         return
     emoji_str = await get_emoji_reaction(replied_message.text)
     if emoji_str:
         try:
-            await global_context.bot.set_message_reaction(chat_id=event.chat_id, message_id=replied_message.message_id, reaction=[ReactionTypeEmoji(emoji_str)])
+            await context.bot.set_message_reaction(chat_id=update.effective_chat.id, message_id=replied_message.message_id, reaction=[ReactionTypeEmoji(emoji_str)])
             # Delete the command message
-            try: await event.delete()
-            except errors.RPCError: pass
-        except errors.RPCError as e:
+            try: await update.message.delete()
+            except BadRequest: pass
+        except BadRequest as e:
             logger.warning(f"Failed to force reaction: {e.message}")
             # Don't send error message to user, just log
 
-async def toggle_audio_mode_handler(event):
+async def toggle_audio_mode_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message: return
-    if not await is_user_admin(event.chat_id, event.sender.id):
-         await event.reply("Only admins can toggle audio mode.")
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+         await update.message.reply_text("Only admins can toggle audio mode.")
          return
-    chat_id = str(event.chat_id)
+    chat_id = str(update.message.chat_id)
     config = load_config()
     is_enabled = config.setdefault("audio_mode_config", {}).get(chat_id, False)
     config["audio_mode_config"][chat_id] = not is_enabled
     save_config(config)
     status = "ON" if not is_enabled else "OFF"
-    await event.reply(f"🎤 Audio mode is now **{status}**.", parse_mode='Markdown')
+    await update.message.reply_text(f"🎤 Audio mode is now **{status}**.", parse_mode='Markdown')
 
 # --- Other Command Handlers ---
 
-async def chem_handler(event) -> None:
+async def chem_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
-    smiles = " ".join(event.text.split()[1:])
+    smiles = " ".join(context.args)
     if not smiles:
-        await event.reply("Provide a SMILES string. Usage: `/chem CCO`")
+        await update.message.reply_text("Provide a SMILES string. Usage: `/chem CCO`")
         return
     mol = await asyncio.to_thread(Chem.MolFromSmiles, smiles) # Run RDKit in thread
     if mol is None:
-        await event.reply("Invalid SMILES string.")
+        await update.message.reply_text("Invalid SMILES string.")
         return
     try:
         # Run drawing in thread as it might be CPU intensive
@@ -2358,138 +2217,138 @@ async def chem_handler(event) -> None:
         png_data = await asyncio.to_thread(draw_molecule, mol)
 
         png_buffer = io.BytesIO(png_data)
-        await event.respond(file=png_buffer, caption=f"`{smiles}`", parse_mode='md')
+        await update.message.reply_photo(photo=InputFile(png_buffer, filename='molecule.png'), caption=f"`{smiles}`", parse_mode='Markdown')
     except Exception as e:
         logger.error(f"RDKit chem handler failed: {e}")
-        await event.reply("Error generating molecule image.")
+        await update.message.reply_text("Error generating molecule image.")
 
-async def latex_handler(event) -> None:
+async def latex_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
-    latex_code = " ".join(event.text.split()[1:])
+    latex_code = " ".join(context.args)
     if not latex_code:
-        await event.reply("Provide a LaTeX expression. Usage: `/tex E = mc^2`")
+        await update.message.reply_text("Provide a LaTeX expression. Usage: `/tex E = mc^2`")
         return
     try:
         url = f"https://latex.codecogs.com/png.latex?%5Cdpi{{300}}%20{httpx.utils.quote(latex_code)}"
         async with httpx.AsyncClient() as client:
             response = await client.get(url, timeout=15.0) # Increased timeout
             if response.status_code == 200:
-                await event.respond(file=response.content, caption=f"`{latex_code}`", parse_mode='Markdown')
+                await update.message.reply_photo(photo=response.content, caption=f"`{latex_code}`", parse_mode='Markdown')
             else:
-                await event.reply(f"Failed to render LaTeX (Status: {response.status_code}). Check syntax?")
+                await update.message.reply_text(f"Failed to render LaTeX (Status: {response.status_code}). Check syntax?")
     except httpx.TimeoutException:
-         await event.reply("LaTeX rendering service timed out.")
+         await update.message.reply_text("LaTeX rendering service timed out.")
     except Exception as e:
         logger.error(f"LaTeX handler failed: {e}")
-        await event.reply("Error rendering LaTeX.")
+        await update.message.reply_text("Error rendering LaTeX.")
 
-async def get_chat_id(event) -> None:
+async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
-    await event.reply(f"This Chat ID is: `{event.chat_id}`", parse_mode='Markdown')
+    await update.message.reply_text(f"This Chat ID is: `{update.message.chat_id}`", parse_mode='Markdown')
 
-async def remember_command(event) -> None:
+async def remember_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
-    text = " ".join(event.text.split()[1:])
+    text = " ".join(context.args)
     if '=' not in text:
-        await event.reply("Usage: `/remember topic = fact`")
+        await update.message.reply_text("Usage: `/remember topic = fact`")
         return
     topic, fact = [x.strip() for x in text.split('=', 1)]
     if not topic or not fact:
-        await event.reply("Both topic and fact are required.")
+        await update.message.reply_text("Both topic and fact are required.")
         return
     memory = load_memory()
     memory[topic.lower()] = fact
     save_memory(memory)
-    await event.reply(f"👍 Okay, remembered that '{topic}' is '{fact}'.")
+    await update.message.reply_text(f"👍 Okay, remembered that '{topic}' is '{fact}'.")
 
-async def recall_command(event) -> None:
+async def recall_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
-    if not event.text.split()[1:]:
+    if not context.args:
         memory = load_memory()
         if not memory:
-            await event.reply("I haven't remembered anything yet.")
+            await update.message.reply_text("I haven't remembered anything yet.")
             return
         topics = ", ".join(memory.keys())
-        await event.reply(f"Topics I remember: {topics}")
+        await update.message.reply_text(f"Topics I remember: {topics}")
         return
-    topic = " ".join(event.text.split()[1:]).lower()
+    topic = " ".join(context.args).lower()
     memory = load_memory()
     fact = memory.get(topic)
     if fact:
-        await event.reply(f"'{topic}': {fact}")
+        await update.message.reply_text(f"'{topic}': {fact}")
     else:
-        await event.reply(f"I don't remember anything about '{topic}'.")
+        await update.message.reply_text(f"I don't remember anything about '{topic}'.")
 
-async def forget_command(event) -> None:
+async def forget_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
-    if not event.text.split()[1:]:
-        await event.reply("What should I forget? Usage: `/forget topic`")
+    if not context.args:
+        await update.message.reply_text("What should I forget? Usage: `/forget topic`")
         return
-    topic = " ".join(event.text.split()[1:]).lower()
+    topic = " ".join(context.args).lower()
     memory = load_memory()
     if topic in memory:
         del memory[topic]
         save_memory(memory)
-        await event.reply(f"👌 Okay, forgot about '{topic}'.")
+        await update.message.reply_text(f"👌 Okay, forgot about '{topic}'.")
     else:
-        await event.reply(f"I didn't know anything about '{topic}' anyway.")
+        await update.message.reply_text(f"I didn't know anything about '{topic}' anyway.")
 
-async def summarize_command(event) -> None:
+async def summarize_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
-    chat_id = event.chat_id
+    chat_id = update.message.chat_id
     if chat_id not in chat_histories or len(chat_histories[chat_id]) < 3: # Lowered threshold
-        await event.reply("Not enough recent chat history to summarize.")
+        await update.message.reply_text("Not enough recent chat history to summarize.")
         return
     transcript = "\n".join(chat_histories[chat_id])
     prompt = f"Summarize the following recent group chat transcript concisely in a few bullet points:\n\n{transcript}"
-    thinking_message = await event.reply("Summarizing...")
+    thinking_message = await update.message.reply_text("Summarizing...")
     summary = await get_typegpt_response([{"role": "system", "content": "You summarize chat logs into key points."}, {"role": "user", "content": prompt}])
     await send_final_response(update, context, summary, thinking_message, "Chat Summary")
 
-async def studypoll_command(event) -> None:
+async def studypoll_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
-    if not await is_user_admin(event.chat_id, event.sender.id):
-        await event.reply("Only admins can create polls.")
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+        await update.message.reply_text("Only admins can create polls.")
         return
     try:
         # Use shlex to handle quotes correctly
-        args = shlex.split(" ".join(event.text.split()[1:]))
+        args = shlex.split(" ".join(context.args))
         if len(args) < 3 or len(args) > 11: # Question + 2-10 options
-            await event.reply('Usage: /studypoll "Question" "Option 1" "Option 2" ... (Max 10 options)')
+            await update.message.reply_text('Usage: /studypoll "Question" "Option 1" "Option 2" ... (Max 10 options)')
             return
         question = args[0]
         options = args[1:]
-        await global_context.bot.send_poll(chat_id=event.chat_id, question=question, options=options, is_anonymous=False)
+        await context.bot.send_poll(chat_id=update.effective_chat.id, question=question, options=options, is_anonymous=False)
     except ValueError as e: # Catch shlex errors
-         await event.reply(f"Error parsing arguments (check your quotes?): {e}")
+         await update.message.reply_text(f"Error parsing arguments (check your quotes?): {e}")
     except Exception as e:
-        await event.reply(f"Error creating poll: {e}")
+        await update.message.reply_text(f"Error creating poll: {e}")
 
-async def aipoll_handler(event) -> None:
+async def aipoll_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
-    await event.reply("Use `/ai make a poll about [topic]` instead.")
+    await update.message.reply_text("Use `/ai make a poll about [topic]` instead.")
 
-async def web_handler(event) -> None:
+async def web_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
-    await event.reply("Use `/ai [your query]` for web search.")
+    await update.message.reply_text("Use `/ai [your query]` for web search.")
 
-async def nanoedit_handler(event) -> None:
+async def nanoedit_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
     config = load_config()
-    chat_id = str(event.chat_id)
+    chat_id = str(update.message.chat_id)
     if not config.get("ai_enabled_config", {}).get(chat_id, False):
-        await event.reply("AI is off for this group.")
+        await update.message.reply_text("AI is off for this group.")
         return
 
-    replied_message = event.reply_to_msg_id and await event.get_reply_message()
+    replied_message = update.message.reply_to_message
     if not (replied_message and replied_message.photo):
-        await event.reply("Reply to an image with /nanoedit to use this command.")
+        await update.message.reply_text("Reply to an image with /nanoedit to use this command.")
         return
 
-    prompt = " ".join(event.text.split()[1:])
+    prompt = " ".join(context.args)
     if not prompt: prompt = "Describe this image."
 
-    thinking_message = await event.reply("Processing image with Nano...")
+    thinking_message = await update.message.reply_text("Processing image with Nano...")
 
     try:
         photo_file = await replied_message.photo[-1].get_file()
@@ -2523,7 +2382,7 @@ async def nanoedit_handler(event) -> None:
                     if image_data_url and "base64," in image_data_url:
                         base64_string = image_data_url.split(',', 1)[1]
                         image_bytes = base64.b64decode(base64_string)
-                        await global_context.bot.send_photo(chat_id=event.chat_id, photo=image_bytes, caption=f"🖼️ Result: `{prompt}`", parse_mode='Markdown')
+                        await context.bot.send_photo(chat_id=update.effective_chat.id, photo=image_bytes, caption=f"🖼️ Result: `{prompt}`", parse_mode='Markdown')
                         await thinking_message.delete()
                         return
             # If no image, check for text content
@@ -2535,7 +2394,7 @@ async def nanoedit_handler(event) -> None:
 
         except Exception as e:
             logger.error(f"Nanoedit Primary API (OpenRouter) failed: {e}. Trying text fallback.")
-            await global_context.bot.edit_message_text("Image edit failed, trying description...", chat_id=event.chat_id, message_id=thinking_message.message_id)
+            await context.bot.edit_message_text("Image edit failed, trying description...", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
             # --- FALLBACK: Text-based vision ---
             text_response = await get_typegpt_gemini_vision_response(messages) # Or Baidu
             if not text_response:
@@ -2544,28 +2403,28 @@ async def nanoedit_handler(event) -> None:
             if text_response:
                  await send_final_response(update, context, text_response, thinking_message, prompt)
             else:
-                 await global_context.bot.edit_message_text("All fallbacks failed.", chat_id=event.chat_id, message_id=thinking_message.message_id)
+                 await context.bot.edit_message_text("All fallbacks failed.", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
     
     except Exception as e:
         logger.error(f"Nanoedit handler failed catastrophically: {e}")
-        await global_context.bot.edit_message_text("Command Failed.", chat_id=event.chat_id, message_id=thinking_message.message_id)
+        await context.bot.edit_message_text("Command Failed.", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
 
 
-async def askit_handler(event) -> None:
+async def askit_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
     config = load_config()
-    chat_id = str(event.chat_id)
+    chat_id = str(update.message.chat_id)
     if not config.get("ai_enabled_config", {}).get(chat_id, False):
-        await event.reply("AI is off for this group.")
+        await update.message.reply_text("AI is off for this group.")
         return
 
-    replied_message = event.reply_to_msg_id and await event.get_reply_message()
+    replied_message = update.message.reply_to_message
     if not (replied_message and replied_message.photo):
-        await event.reply("Reply to an image with /askit.")
+        await update.message.reply_text("Reply to an image with /askit.")
         return
 
-    prompt = " ".join(event.text.split()[1:]) or "Describe this image in detail."
-    thinking_message = await event.reply("Analyzing image...")
+    prompt = " ".join(context.args) or "Describe this image in detail."
+    thinking_message = await update.message.reply_text("Analyzing image...")
 
     try:
         photo_file = await replied_message.photo[-1].get_file()
@@ -2583,41 +2442,41 @@ async def askit_handler(event) -> None:
         if response_text:
             await send_final_response(update, context, response_text, thinking_message, prompt)
         else:
-            await global_context.bot.edit_message_text("All vision models failed.", chat_id=event.chat_id, message_id=thinking_message.message_id)
+            await context.bot.edit_message_text("All vision models failed.", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
 
     except Exception as e:
         logger.error(f"Askit handler failed: {e}")
-        await global_context.bot.edit_message_text("Image analysis failed.", chat_id=event.chat_id, message_id=thinking_message.message_id)
+        await context.bot.edit_message_text("Image analysis failed.", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
 
-async def videoedit_handler(event) -> None:
+async def videoedit_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Generate video from image using Replicate's free/wan-2.1-i2v-14b-720p model."""
     if not update.message: 
         return
     
     config = load_config()
-    chat_id = str(event.chat_id)
+    chat_id = str(update.message.chat_id)
     if not config.get("ai_enabled_config", {}).get(chat_id, False):
-        await event.reply("AI is off for this group.")
+        await update.message.reply_text("AI is off for this group.")
         return
     
     # Check if replying to a message with an image
-    replied_message = event.reply_to_msg_id and await event.get_reply_message()
+    replied_message = update.message.reply_to_message
     if not (replied_message and replied_message.photo):
-        await event.reply("Reply to an image with /videoedit \"prompt\" to generate a video.")
+        await update.message.reply_text("Reply to an image with /videoedit \"prompt\" to generate a video.")
         return
     
     # Extract prompt from command arguments
-    prompt = " ".join(event.text.split()[1:])
+    prompt = " ".join(context.args)
     if not prompt:
-        await event.reply("Please provide a prompt. Usage: /videoedit \"your prompt here\"")
+        await update.message.reply_text("Please provide a prompt. Usage: /videoedit \"your prompt here\"")
         return
     
     # Check if Replicate API key is configured
     if not REPLICATE_API_KEY:
-        await event.reply("Video generation is not configured (missing API key).")
+        await update.message.reply_text("Video generation is not configured (missing API key).")
         return
     
-    thinking_message = await event.reply("🎬 Generating video... This may take a few minutes.")
+    thinking_message = await update.message.reply_text("🎬 Generating video... This may take a few minutes.")
     
     try:
         # Download the image from Telegram
@@ -2650,9 +2509,9 @@ async def videoedit_handler(event) -> None:
         output = await asyncio.to_thread(run_replicate_i2v)
         
         if not output:
-            await global_context.bot.edit_message_text(
+            await context.bot.edit_message_text(
                 "❌ Video generation failed. The API returned no output.",
-                chat_id=event.chat_id,
+                chat_id=update.effective_chat.id,
                 message_id=thinking_message.message_id
             )
             return
@@ -2672,17 +2531,17 @@ async def videoedit_handler(event) -> None:
         
         if not video_url or not video_url.startswith('http'):
             logger.error(f"Invalid video URL from Replicate: {video_url}")
-            await global_context.bot.edit_message_text(
+            await context.bot.edit_message_text(
                 "❌ Video generation failed. Invalid response from API.",
-                chat_id=event.chat_id,
+                chat_id=update.effective_chat.id,
                 message_id=thinking_message.message_id
             )
             return
         
         logger.info(f"Downloading generated video from: {video_url}")
-        await global_context.bot.edit_message_text(
+        await context.bot.edit_message_text(
             "📥 Downloading video...",
-            chat_id=event.chat_id,
+            chat_id=update.effective_chat.id,
             message_id=thinking_message.message_id
         )
         
@@ -2694,8 +2553,8 @@ async def videoedit_handler(event) -> None:
         logger.info(f"Video downloaded successfully. Size: {len(video_bytes)} bytes")
         
         # Send the video back to the chat
-        await global_context.bot.send_video(
-            chat_id=event.chat_id,
+        await context.bot.send_video(
+            chat_id=update.effective_chat.id,
             video=video_bytes,
             caption=f"🎬 Generated video\nPrompt: {prompt}",
             reply_to_message_id=replied_message.message_id
@@ -2704,200 +2563,200 @@ async def videoedit_handler(event) -> None:
         # Delete the thinking message
         try:
             await thinking_message.delete()
-        except errors.RPCError:
+        except BadRequest:
             pass
         
         logger.info("Video sent successfully!")
         
     except httpx.HTTPStatusError as e:
         logger.error(f"HTTP error downloading video: {e}")
-        await global_context.bot.edit_message_text(
+        await context.bot.edit_message_text(
             "❌ Failed to download the generated video.",
-            chat_id=event.chat_id,
+            chat_id=update.effective_chat.id,
             message_id=thinking_message.message_id
         )
     except httpx.TimeoutException:
         logger.error("Timeout while generating or downloading video")
-        await global_context.bot.edit_message_text(
+        await context.bot.edit_message_text(
             "⏱️ Video generation timed out. Please try again with a simpler prompt.",
-            chat_id=event.chat_id,
+            chat_id=update.effective_chat.id,
             message_id=thinking_message.message_id
         )
     except Exception as e:
         logger.error(f"Video generation handler failed: {e}", exc_info=True)
         try:
-            await global_context.bot.edit_message_text(
+            await context.bot.edit_message_text(
                 f"❌ Video generation failed: {str(e)}",
-                chat_id=event.chat_id,
+                chat_id=update.effective_chat.id,
                 message_id=thinking_message.message_id
             )
-        except errors.RPCError:
+        except BadRequest:
             pass
 
-async def simple_ai_handler(event) -> None:
+async def simple_ai_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
     # Keep this for backward compatibility or simpler tasks if needed
-    prompt = " ".join(event.text.split()[1:])
+    prompt = " ".join(context.args)
     if not prompt:
-        await event.reply("Please provide a prompt.")
+        await update.message.reply_text("Please provide a prompt.")
         return
-    thinking_message = await event.reply("Thinking...")
+    thinking_message = await update.message.reply_text("Thinking...")
     messages = [{"role": "system", "content": "You are a helpful assistant."}, {"role": "user", "content": prompt}]
     response = await get_typegpt_response(messages) # Use the main chain
     await send_final_response(update, context, response, thinking_message, prompt)
     
 # --- Settings and Moderation Command Handlers ---
 
-async def turn_ai_on(event) -> None:
+async def turn_ai_on(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
-    if not await is_user_admin(event.chat_id, event.sender.id): return
-    chat_id = str(event.chat_id)
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context): return
+    chat_id = str(update.message.chat_id)
     config = load_config(); config.setdefault("ai_enabled_config", {})[chat_id] = True; save_config(config)
-    await event.reply("✅ AI features **ON**.", parse_mode='Markdown')
+    await update.message.reply_text("✅ AI features **ON**.", parse_mode='Markdown')
 
-async def turn_ai_off(event) -> None:
+async def turn_ai_off(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
-    if not await is_user_admin(event.chat_id, event.sender.id): return
-    chat_id = str(event.chat_id); config = load_config()
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context): return
+    chat_id = str(update.message.chat_id); config = load_config()
     config.setdefault("ai_enabled_config", {})[chat_id] = False; save_config(config)
-    await event.reply("❌ AI features **OFF**.", parse_mode='Markdown')
+    await update.message.reply_text("❌ AI features **OFF**.", parse_mode='Markdown')
 
-async def check_ai_status(event) -> None:
+async def check_ai_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
-    if not await is_user_admin(event.chat_id, event.sender.id): return
-    chat_id = str(event.chat_id); config = load_config()
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context): return
+    chat_id = str(update.message.chat_id); config = load_config()
     status = "ON" if config.get("ai_enabled_config", {}).get(chat_id, False) else "OFF"
-    await event.reply(f"ℹ️ AI features are **{status}**.", parse_mode='Markdown')
+    await update.message.reply_text(f"ℹ️ AI features are **{status}**.", parse_mode='Markdown')
 
-async def turn_random_chat_on(event) -> None:
+async def turn_random_chat_on(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
-    if not await is_user_admin(event.chat_id, event.sender.id): return
-    chat_id = str(event.chat_id); config = load_config()
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context): return
+    chat_id = str(update.message.chat_id); config = load_config()
     config.setdefault("random_chat_config", {})[chat_id] = True; save_config(config)
-    await event.reply("✅ Random chat **ON**.", parse_mode='Markdown')
+    await update.message.reply_text("✅ Random chat **ON**.", parse_mode='Markdown')
 
-async def turn_random_chat_off(event) -> None:
+async def turn_random_chat_off(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
-    if not await is_user_admin(event.chat_id, event.sender.id): return
-    chat_id = str(event.chat_id); config = load_config()
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context): return
+    chat_id = str(update.message.chat_id); config = load_config()
     config.setdefault("random_chat_config", {})[chat_id] = False; save_config(config)
-    await event.reply("❌ Random chat **OFF**.", parse_mode='Markdown')
+    await update.message.reply_text("❌ Random chat **OFF**.", parse_mode='Markdown')
 
-async def check_random_status(event) -> None:
+async def check_random_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
-    if not await is_user_admin(event.chat_id, event.sender.id): return
-    chat_id = str(event.chat_id); config = load_config()
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context): return
+    chat_id = str(update.message.chat_id); config = load_config()
     status = "ON" if config.get("random_chat_config", {}).get(chat_id, True) else "OFF" # Default ON
-    await event.reply(f"ℹ️ Random chat is **{status}**.", parse_mode='Markdown')
+    await update.message.reply_text(f"ℹ️ Random chat is **{status}**.", parse_mode='Markdown')
 
-async def test_random_handler(event) -> None:
+async def test_random_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
-    if not await is_user_admin(event.chat_id, event.sender.id): return
-    await event.reply("Triggering random chat logic now...")
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context): return
+    await update.message.reply_text("Triggering random chat logic now...")
     # Schedule immediately
-    global_context.job_queue.run_once(random_chat_callback, 0, data={"chat_id": event.chat_id})
+    context.job_queue.run_once(random_chat_callback, 0, data={"chat_id": update.message.chat_id})
 
-async def turn_moderation_on(event) -> None:
+async def turn_moderation_on(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
-    if not await is_user_admin(event.chat_id, event.sender.id): return
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context): return
     config = load_config(); config["moderation_enabled"] = True; save_config(config)
-    await event.reply("✅ Moderation commands **ON**.", parse_mode='Markdown')
+    await update.message.reply_text("✅ Moderation commands **ON**.", parse_mode='Markdown')
 
-async def turn_moderation_off(event) -> None:
+async def turn_moderation_off(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
-    if not await is_user_admin(event.chat_id, event.sender.id): return
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context): return
     config = load_config(); config["moderation_enabled"] = False; save_config(config)
-    await event.reply("❌ Moderation commands **OFF**.", parse_mode='Markdown')
+    await update.message.reply_text("❌ Moderation commands **OFF**.", parse_mode='Markdown')
 
-async def ban_user(event) -> None:
+async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
     config = load_config()
-    if not config.get("moderation_enabled", True): await event.reply("Mod commands off."); return
-    if not await is_user_admin(event.chat_id, event.sender.id): await event.reply("Admins only."); return
-    if not event.reply_to_msg_id and await event.get_reply_message(): await event.reply("Reply to ban."); return
-    target_user = event.reply_to_msg_id and await event.get_reply_message().from_user
+    if not config.get("moderation_enabled", True): await update.message.reply_text("Mod commands off."); return
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context): await update.message.reply_text("Admins only."); return
+    if not update.message.reply_to_message: await update.message.reply_text("Reply to ban."); return
+    target_user = update.message.reply_to_message.from_user
     try:
-        await global_context.bot.ban_chat_member(event.chat_id, target_user.id)
-        await event.reply(f"Banned {target_user.first_name or "User"}.")
-    except Exception as e: await event.reply(f"Failed to ban: {e}")
+        await context.bot.ban_chat_member(update.message.chat_id, target_user.id)
+        await update.message.reply_text(f"Banned {target_user.first_name}.")
+    except Exception as e: await update.message.reply_text(f"Failed to ban: {e}")
 
-async def mute_user(event) -> None:
+async def mute_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
     config = load_config();
-    if not config.get("moderation_enabled", True): await event.reply("Mod commands off."); return
-    if not await is_user_admin(event.chat_id, event.sender.id): await event.reply("Admins only."); return
-    if not event.reply_to_msg_id and await event.get_reply_message(): await event.reply("Reply to mute."); return
-    target_user = event.reply_to_msg_id and await event.get_reply_message().from_user
+    if not config.get("moderation_enabled", True): await update.message.reply_text("Mod commands off."); return
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context): await update.message.reply_text("Admins only."); return
+    if not update.message.reply_to_message: await update.message.reply_text("Reply to mute."); return
+    target_user = update.message.reply_to_message.from_user
     try:
-        await global_context.bot.restrict_chat_member(event.chat_id, target_user.id, ChatPermissions(can_send_messages=False))
-        await event.reply(f"Muted {target_user.first_name or "User"}.")
-    except Exception as e: await event.reply(f"Failed to mute: {e}")
+        await context.bot.restrict_chat_member(update.message.chat_id, target_user.id, ChatPermissions(can_send_messages=False))
+        await update.message.reply_text(f"Muted {target_user.first_name}.")
+    except Exception as e: await update.message.reply_text(f"Failed to mute: {e}")
 
-async def unmute_user(event) -> None:
+async def unmute_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
     config = load_config();
-    if not config.get("moderation_enabled", True): await event.reply("Mod commands off."); return
-    if not await is_user_admin(event.chat_id, event.sender.id): await event.reply("Admins only."); return
-    if not event.reply_to_msg_id and await event.get_reply_message(): await event.reply("Reply to unmute."); return
-    target_user = event.reply_to_msg_id and await event.get_reply_message().from_user
+    if not config.get("moderation_enabled", True): await update.message.reply_text("Mod commands off."); return
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context): await update.message.reply_text("Admins only."); return
+    if not update.message.reply_to_message: await update.message.reply_text("Reply to unmute."); return
+    target_user = update.message.reply_to_message.from_user
     try:
         # Restore default permissions (adjust if your group has specific defaults)
         perms = ChatPermissions(can_send_messages=True, can_send_media_messages=True, can_send_other_messages=True, can_add_web_page_previews=True, can_send_polls=True, can_invite_users=True) # Common defaults
-        await global_context.bot.restrict_chat_member(event.chat_id, target_user.id, perms)
-        await event.reply(f"Unmuted {target_user.first_name or "User"}.")
-    except Exception as e: await event.reply(f"Failed to unmute: {e}")
+        await context.bot.restrict_chat_member(update.message.chat_id, target_user.id, perms)
+        await update.message.reply_text(f"Unmuted {target_user.first_name}.")
+    except Exception as e: await update.message.reply_text(f"Failed to unmute: {e}")
 
-async def delete_message(event) -> None:
+async def delete_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
     config = load_config();
-    if not config.get("moderation_enabled", True): await event.reply("Mod commands off."); return
-    if not await is_user_admin(event.chat_id, event.sender.id): await event.reply("Admins only."); return
-    if not event.reply_to_msg_id and await event.get_reply_message(): await event.reply("Reply to delete."); return
+    if not config.get("moderation_enabled", True): await update.message.reply_text("Mod commands off."); return
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context): await update.message.reply_text("Admins only."); return
+    if not update.message.reply_to_message: await update.message.reply_text("Reply to delete."); return
     try:
-        await global_context.bot.delete_message(event.chat_id, event.reply_to_msg_id and await event.get_reply_message().message_id)
+        await context.bot.delete_message(update.message.chat_id, update.message.reply_to_message.message_id)
         # Delete the command message too for cleanliness
-        try: await event.delete()
-        except errors.RPCError: pass # Ignore if already gone
-    except Exception as e: await event.reply(f"Failed to delete: {e}")
+        try: await update.message.delete()
+        except BadRequest: pass # Ignore if already gone
+    except Exception as e: await update.message.reply_text(f"Failed to delete: {e}")
 
-async def lock_chat(event) -> None:
+async def lock_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
     config = load_config();
-    if not config.get("moderation_enabled", True): await event.reply("Mod commands off."); return
-    if not await is_user_admin(event.chat_id, event.sender.id): await event.reply("Admins only."); return
+    if not config.get("moderation_enabled", True): await update.message.reply_text("Mod commands off."); return
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context): await update.message.reply_text("Admins only."); return
     try:
-        await global_context.bot.set_chat_permissions(event.chat_id, ChatPermissions(can_send_messages=False))
-        await event.reply("🔒 Chat locked.")
-    except Exception as e: await event.reply(f"Failed to lock: {e}")
+        await context.bot.set_chat_permissions(update.message.chat_id, ChatPermissions(can_send_messages=False))
+        await update.message.reply_text("🔒 Chat locked.")
+    except Exception as e: await update.message.reply_text(f"Failed to lock: {e}")
 
-async def unlock_chat(event) -> None:
+async def unlock_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
     config = load_config();
-    if not config.get("moderation_enabled", True): await event.reply("Mod commands off."); return
-    if not await is_user_admin(event.chat_id, event.sender.id): await event.reply("Admins only."); return
+    if not config.get("moderation_enabled", True): await update.message.reply_text("Mod commands off."); return
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context): await update.message.reply_text("Admins only."); return
     try:
         # Restore default permissions (adjust if needed)
         perms = ChatPermissions(can_send_messages=True, can_send_media_messages=True, can_send_polls=True, can_send_other_messages=True, can_add_web_page_previews=True, can_invite_users=True)
-        await global_context.bot.set_chat_permissions(event.chat_id, perms)
-        await event.reply("🔓 Chat unlocked.")
-    except Exception as e: await event.reply(f"Failed to unlock: {e}")
+        await context.bot.set_chat_permissions(update.message.chat_id, perms)
+        await update.message.reply_text("🔓 Chat unlocked.")
+    except Exception as e: await update.message.reply_text(f"Failed to unlock: {e}")
 
-async def set_reminder_time_handler(event) -> None:
+async def set_reminder_time_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
-    if not await is_user_admin(event.chat_id, event.sender.id): await event.reply("Admins only."); return
-    if not event.text.split()[1:]: await event.reply("Usage: /time HH:MM (24-hour IST)"); return
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context): await update.message.reply_text("Admins only."); return
+    if not context.args: await update.message.reply_text("Usage: /time HH:MM (24-hour IST)"); return
     try:
-        new_time_str = event.text.split()[1:][0]
+        new_time_str = context.args[0]
         new_time_obj = datetime.strptime(new_time_str, "%H:%M").time()
         config = load_config(); config["reminder_time"] = new_time_str; save_config(config)
         # Reschedule job
-        current_jobs = global_context.job_queue.get_jobs_by_name("daily_reminder")
+        current_jobs = context.job_queue.get_jobs_by_name("daily_reminder")
         for job in current_jobs: job.schedule_removal()
         reminder_time = time(hour=new_time_obj.hour, minute=new_time_obj.minute, tzinfo=pytz.timezone('Asia/Kolkata'))
-        global_context.job_queue.run_daily(send_daily_reminder, time=reminder_time, name="daily_reminder")
-        await event.reply(f"✅ Reminder time updated to {new_time_str} IST.")
-    except ValueError: await event.reply("Invalid time format. Use HH:MM.")
-    except Exception as e: await event.reply(f"Error setting time: {e}")
+        context.job_queue.run_daily(send_daily_reminder, time=reminder_time, name="daily_reminder")
+        await update.message.reply_text(f"✅ Reminder time updated to {new_time_str} IST.")
+    except ValueError: await update.message.reply_text("Invalid time format. Use HH:MM.")
+    except Exception as e: await update.message.reply_text(f"Error setting time: {e}")
 
 async def send_daily_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
     if TARGET_CHAT_ID == 0: logger.warning("TARGET_CHAT_ID not set or invalid."); return
@@ -2914,7 +2773,7 @@ async def send_daily_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
         
         if message_lines: # Only send if there's something to say
             message = "\n".join(message_lines)
-            await global_context.bot.send_message(chat_id=TARGET_CHAT_ID, text=message, parse_mode='Markdown')
+            await context.bot.send_message(chat_id=TARGET_CHAT_ID, text=message, parse_mode='Markdown')
             logger.info(f"Sent daily reminder to {TARGET_CHAT_ID}")
         else:
             logger.info("No relevant dates left for daily reminder.")
@@ -2924,13 +2783,13 @@ async def send_daily_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 # --- Proactive Call Command Handlers ---
 
-async def turn_proactive_calls_on(event) -> None:
+async def turn_proactive_calls_on(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
-    if not await is_user_admin(event.chat_id, event.sender.id):
-        await event.reply("Only admins can toggle proactive call features.")
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+        await update.message.reply_text("Only admins can toggle proactive call features.")
         return
     
-    chat_id = str(event.chat_id)
+    chat_id = str(update.message.chat_id)
     config = load_config()
     
     if "proactive_call_config" not in config:
@@ -2944,7 +2803,7 @@ async def turn_proactive_calls_on(event) -> None:
     
     save_config(config)
     
-    await event.reply(
+    await update.message.reply_text(
         "✅ **Proactive call participation is now ON.**\n\n"
         "The bot will now:\n"
         "• Listen to voice messages in calls\n"
@@ -2954,13 +2813,13 @@ async def turn_proactive_calls_on(event) -> None:
         parse_mode='Markdown'
     )
 
-async def turn_proactive_calls_off(event) -> None:
+async def turn_proactive_calls_off(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
-    if not await is_user_admin(event.chat_id, event.sender.id):
-        await event.reply("Only admins can toggle proactive call features.")
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+        await update.message.reply_text("Only admins can toggle proactive call features.")
         return
     
-    chat_id = str(event.chat_id)
+    chat_id = str(update.message.chat_id)
     config = load_config()
     
     if "proactive_call_config" not in config:
@@ -2976,15 +2835,15 @@ async def turn_proactive_calls_off(event) -> None:
     if chat_id in active_calls:
         del active_calls[chat_id]
     
-    await event.reply("❌ **Proactive call participation is now OFF.**", parse_mode='Markdown')
+    await update.message.reply_text("❌ **Proactive call participation is now OFF.**", parse_mode='Markdown')
 
-async def check_proactive_calls_status(event) -> None:
+async def check_proactive_calls_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
-    if not await is_user_admin(event.chat_id, event.sender.id):
-        await event.reply("Only admins can check call status.")
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+        await update.message.reply_text("Only admins can check call status.")
         return
     
-    chat_id = str(event.chat_id)
+    chat_id = str(update.message.chat_id)
     config = load_config()
     
     call_config = config.get("proactive_call_config", {}).get(chat_id, {})
@@ -3010,27 +2869,27 @@ async def check_proactive_calls_status(event) -> None:
         status_text += f"• Transcripts: {transcript_count}\n"
         status_text += f"• Errors: {error_count}\n"
     
-    await event.reply(status_text, parse_mode='Markdown')
+    await update.message.reply_text(status_text, parse_mode='Markdown')
 
-async def set_call_quiet_hours(event) -> None:
+async def set_call_quiet_hours(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
-    if not await is_user_admin(event.chat_id, event.sender.id):
-        await event.reply("Only admins can set quiet hours.")
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+        await update.message.reply_text("Only admins can set quiet hours.")
         return
     
-    if len(event.text.split()[1:]) != 2:
-        await event.reply("Usage: `/callquiet HH:MM HH:MM` (start time and end time in 24-hour format)")
+    if len(context.args) != 2:
+        await update.message.reply_text("Usage: `/callquiet HH:MM HH:MM` (start time and end time in 24-hour format)")
         return
     
     try:
-        start_str = event.text.split()[1:][0]
-        end_str = event.text.split()[1:][1]
+        start_str = context.args[0]
+        end_str = context.args[1]
         
         # Validate time format
         datetime.strptime(start_str, "%H:%M")
         datetime.strptime(end_str, "%H:%M")
         
-        chat_id = str(event.chat_id)
+        chat_id = str(update.message.chat_id)
         config = load_config()
         
         if "call_quiet_hours" not in config:
@@ -3043,36 +2902,36 @@ async def set_call_quiet_hours(event) -> None:
         
         save_config(config)
         
-        await event.reply(
+        await update.message.reply_text(
             f"✅ Quiet hours set: **{start_str} to {end_str}** (IST)\n"
             f"The bot will not participate in calls during these hours.",
             parse_mode='Markdown'
         )
     
     except ValueError:
-        await event.reply("Invalid time format. Use HH:MM (24-hour format).")
+        await update.message.reply_text("Invalid time format. Use HH:MM (24-hour format).")
     except Exception as e:
         logger.error(f"Error setting quiet hours: {e}")
-        await event.reply("Error setting quiet hours.")
+        await update.message.reply_text("Error setting quiet hours.")
 
-async def configure_call_settings(event) -> None:
+async def configure_call_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
-    if not await is_user_admin(event.chat_id, event.sender.id):
-        await event.reply("Only admins can configure call settings.")
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+        await update.message.reply_text("Only admins can configure call settings.")
         return
     
-    if not event.text.split()[1:]:
-        await event.reply("Usage: `/callconfig [min_participants]`\nExample: `/callconfig 3`")
+    if not context.args:
+        await update.message.reply_text("Usage: `/callconfig [min_participants]`\nExample: `/callconfig 3`")
         return
     
     try:
-        min_participants = int(event.text.split()[1:][0])
+        min_participants = int(context.args[0])
         
         if min_participants < 1:
-            await event.reply("Minimum participants must be at least 1.")
+            await update.message.reply_text("Minimum participants must be at least 1.")
             return
         
-        chat_id = str(event.chat_id)
+        chat_id = str(update.message.chat_id)
         config = load_config()
         
         if "proactive_call_config" not in config:
@@ -3084,30 +2943,30 @@ async def configure_call_settings(event) -> None:
         config["proactive_call_config"][chat_id]["min_participants"] = min_participants
         save_config(config)
         
-        await event.reply(
+        await update.message.reply_text(
             f"✅ Call configuration updated:\n"
             f"**Minimum participants:** {min_participants}",
             parse_mode='Markdown'
         )
     
     except ValueError:
-        await event.reply("Invalid number. Please provide a valid integer.")
+        await update.message.reply_text("Invalid number. Please provide a valid integer.")
     except Exception as e:
         logger.error(f"Error configuring call settings: {e}")
-        await event.reply("Error updating call configuration.")
+        await update.message.reply_text("Error updating call configuration.")
 
-async def joincall_command(event) -> None:
+async def joincall_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Manually join a voice chat."""
     if not update.message: return
-    if not await is_user_admin(event.chat_id, event.sender.id):
-        await event.reply("Only admins can control call participation.")
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+        await update.message.reply_text("Only admins can control call participation.")
         return
     
-    chat_id_int = event.chat_id
+    chat_id_int = update.message.chat_id
     
     # Check if API credentials are configured
     if not API_ID or not API_HASH:
-        await event.reply(
+        await update.message.reply_text(
             "❌ Call features not configured.\n"
             "Please set API_ID and API_HASH environment variables."
         )
@@ -3115,10 +2974,10 @@ async def joincall_command(event) -> None:
     
     # Check if already in call
     if await is_in_call(chat_id_int):
-        await event.reply("✅ Already in the voice chat.")
+        await update.message.reply_text("✅ Already in the voice chat.")
         return
     
-    status_msg = await event.reply("🔄 Joining voice chat...")
+    status_msg = await update.message.reply_text("🔄 Joining voice chat...")
     
     try:
         success = await join_voice_chat(chat_id_int, auto_join=False)
@@ -3135,21 +2994,21 @@ async def joincall_command(event) -> None:
         logger.error(f"Error in joincall command: {e}", exc_info=True)
         await status_msg.edit_text("❌ Error joining voice chat.")
 
-async def leavecall_command(event) -> None:
+async def leavecall_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Manually leave a voice chat."""
     if not update.message: return
-    if not await is_user_admin(event.chat_id, event.sender.id):
-        await event.reply("Only admins can control call participation.")
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+        await update.message.reply_text("Only admins can control call participation.")
         return
     
-    chat_id_int = event.chat_id
+    chat_id_int = update.message.chat_id
     
     # Check if in call
     if not await is_in_call(chat_id_int):
-        await event.reply("Not currently in a voice chat.")
+        await update.message.reply_text("Not currently in a voice chat.")
         return
     
-    status_msg = await event.reply("🔄 Leaving voice chat...")
+    status_msg = await update.message.reply_text("🔄 Leaving voice chat...")
     
     try:
         success = await leave_voice_chat(chat_id_int)
@@ -3163,11 +3022,11 @@ async def leavecall_command(event) -> None:
         logger.error(f"Error in leavecall command: {e}", exc_info=True)
         await status_msg.edit_text("❌ Error leaving voice chat.")
 
-async def callinfo_command(event) -> None:
+async def callinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show detailed call state information."""
     if not update.message: return
     
-    chat_id_int = event.chat_id
+    chat_id_int = update.message.chat_id
     call_state = await get_call_state(chat_id_int)
     
     state = call_state.get("state", "idle")
@@ -3194,18 +3053,18 @@ async def callinfo_command(event) -> None:
     # Check Telethon status
     status_text += f"\n**Telethon Client:** {'✅ Connected' if telethon_client else '❌ Not initialized'}\n"
     
-    await event.reply(status_text, parse_mode='Markdown')
+    await update.message.reply_text(status_text, parse_mode='Markdown')
 
 # --- TTS/STT Configuration Commands ---
 
-async def ttson(event) -> None:
+async def ttson(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Enable TTS for this chat."""
     if not update.message: return
-    if not await is_user_admin(event.chat_id, event.sender.id):
-        await event.reply("Only admins can enable TTS.")
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+        await update.message.reply_text("Only admins can enable TTS.")
         return
     
-    chat_id = str(event.chat_id)
+    chat_id = str(update.message.chat_id)
     config = load_config()
     
     if "tts_config" not in config:
@@ -3217,16 +3076,16 @@ async def ttson(event) -> None:
     config["tts_config"][chat_id]["enabled"] = True
     save_config(config)
     
-    await event.reply("✅ TTS enabled for this chat. Bot will speak responses during calls.")
+    await update.message.reply_text("✅ TTS enabled for this chat. Bot will speak responses during calls.")
 
-async def ttsoff(event) -> None:
+async def ttsoff(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Disable TTS for this chat."""
     if not update.message: return
-    if not await is_user_admin(event.chat_id, event.sender.id):
-        await event.reply("Only admins can disable TTS.")
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+        await update.message.reply_text("Only admins can disable TTS.")
         return
     
-    chat_id = str(event.chat_id)
+    chat_id = str(update.message.chat_id)
     config = load_config()
     
     if "tts_config" not in config:
@@ -3238,17 +3097,17 @@ async def ttsoff(event) -> None:
     config["tts_config"][chat_id]["enabled"] = False
     save_config(config)
     
-    await event.reply("✅ TTS disabled for this chat.")
+    await update.message.reply_text("✅ TTS disabled for this chat.")
 
-async def ttsconfig(event) -> None:
+async def ttsconfig(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Configure TTS voice and rate. Usage: /ttsconfig [voice] [rate]"""
     if not update.message: return
-    if not await is_user_admin(event.chat_id, event.sender.id):
-        await event.reply("Only admins can configure TTS.")
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+        await update.message.reply_text("Only admins can configure TTS.")
         return
     
-    if not event.text.split()[1:]:
-        await event.reply(
+    if not context.args:
+        await update.message.reply_text(
             "Usage: `/ttsconfig [voice] [rate]`\n"
             "Example: `/ttsconfig en-US-AriaNeural +10%`\n"
             "Common voices: en-US-AriaNeural, en-GB-SoniaNeural, en-US-GuyNeural\n"
@@ -3258,10 +3117,10 @@ async def ttsconfig(event) -> None:
         return
     
     try:
-        voice = event.text.split()[1:][0] if len(event.text.split()[1:]) > 0 else EDGE_TTS_VOICE
-        rate = event.text.split()[1:][1] if len(event.text.split()[1:]) > 1 else EDGE_TTS_RATE
+        voice = context.args[0] if len(context.args) > 0 else EDGE_TTS_VOICE
+        rate = context.args[1] if len(context.args) > 1 else EDGE_TTS_RATE
         
-        chat_id = str(event.chat_id)
+        chat_id = str(update.message.chat_id)
         config = load_config()
         
         if "tts_config" not in config:
@@ -3274,7 +3133,7 @@ async def ttsconfig(event) -> None:
         config["tts_config"][chat_id]["rate"] = rate
         save_config(config)
         
-        await event.reply(
+        await update.message.reply_text(
             f"✅ TTS configuration updated:\n"
             f"**Voice:** {voice}\n"
             f"**Rate:** {rate}",
@@ -3283,13 +3142,13 @@ async def ttsconfig(event) -> None:
     
     except Exception as e:
         logger.error(f"Error configuring TTS: {e}")
-        await event.reply("Error updating TTS configuration.")
+        await update.message.reply_text("Error updating TTS configuration.")
 
-async def ttsstatus(event) -> None:
+async def ttsstatus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Check TTS status for this chat."""
     if not update.message: return
     
-    chat_id = str(event.chat_id)
+    chat_id = str(update.message.chat_id)
     config = load_config()
     tts_config = config.get("tts_config", {}).get(chat_id, {})
     
@@ -3299,21 +3158,21 @@ async def ttsstatus(event) -> None:
     
     status = "🔊 **Enabled**" if enabled else "🔇 **Disabled**"
     
-    await event.reply(
+    await update.message.reply_text(
         f"TTS Status: {status}\n"
         f"Voice: {voice}\n"
         f"Rate: {rate}",
         parse_mode='Markdown'
     )
 
-async def stton(event) -> None:
+async def stton(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Enable STT for this chat."""
     if not update.message: return
-    if not await is_user_admin(event.chat_id, event.sender.id):
-        await event.reply("Only admins can enable STT.")
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+        await update.message.reply_text("Only admins can enable STT.")
         return
     
-    chat_id = str(event.chat_id)
+    chat_id = str(update.message.chat_id)
     config = load_config()
     
     if "stt_config" not in config:
@@ -3328,16 +3187,16 @@ async def stton(event) -> None:
     # Initialize Whisper model in background
     asyncio.create_task(initialize_whisper_model())
     
-    await event.reply("✅ STT enabled for this chat. Send voice messages to transcribe them.")
+    await update.message.reply_text("✅ STT enabled for this chat. Send voice messages to transcribe them.")
 
-async def sttoff(event) -> None:
+async def sttoff(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Disable STT for this chat."""
     if not update.message: return
-    if not await is_user_admin(event.chat_id, event.sender.id):
-        await event.reply("Only admins can disable STT.")
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+        await update.message.reply_text("Only admins can disable STT.")
         return
     
-    chat_id = str(event.chat_id)
+    chat_id = str(update.message.chat_id)
     config = load_config()
     
     if "stt_config" not in config:
@@ -3349,17 +3208,17 @@ async def sttoff(event) -> None:
     config["stt_config"][chat_id]["enabled"] = False
     save_config(config)
     
-    await event.reply("✅ STT disabled for this chat.")
+    await update.message.reply_text("✅ STT disabled for this chat.")
 
-async def sttconfig(event) -> None:
+async def sttconfig(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Configure STT language. Usage: /sttconfig [language]"""
     if not update.message: return
-    if not await is_user_admin(event.chat_id, event.sender.id):
-        await event.reply("Only admins can configure STT.")
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+        await update.message.reply_text("Only admins can configure STT.")
         return
     
-    if not event.text.split()[1:]:
-        await event.reply(
+    if not context.args:
+        await update.message.reply_text(
             "Usage: `/sttconfig [language]`\n"
             "Example: `/sttconfig en` or `/sttconfig es`\n"
             "Common languages: en, es, fr, de, it, pt, ru, zh, ja, ko",
@@ -3368,9 +3227,9 @@ async def sttconfig(event) -> None:
         return
     
     try:
-        language = event.text.split()[1:][0]
+        language = context.args[0]
         
-        chat_id = str(event.chat_id)
+        chat_id = str(update.message.chat_id)
         config = load_config()
         
         if "stt_config" not in config:
@@ -3382,20 +3241,20 @@ async def sttconfig(event) -> None:
         config["stt_config"][chat_id]["language"] = language
         save_config(config)
         
-        await event.reply(
+        await update.message.reply_text(
             f"✅ STT language set to: **{language}**",
             parse_mode='Markdown'
         )
     
     except Exception as e:
         logger.error(f"Error configuring STT: {e}")
-        await event.reply("Error updating STT configuration.")
+        await update.message.reply_text("Error updating STT configuration.")
 
-async def sttstatus(event) -> None:
+async def sttstatus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Check STT status for this chat."""
     if not update.message: return
     
-    chat_id = str(event.chat_id)
+    chat_id = str(update.message.chat_id)
     config = load_config()
     stt_config = config.get("stt_config", {}).get(chat_id, {})
     
@@ -3405,7 +3264,7 @@ async def sttstatus(event) -> None:
     status = "🎤 **Enabled**" if enabled else "🔇 **Disabled**"
     model_status = "✅ Loaded" if whisper_model else "⏳ Not loaded"
     
-    await event.reply(
+    await update.message.reply_text(
         f"STT Status: {status}\n"
         f"Language: {language}\n"
         f"Whisper Model ({WHISPER_MODEL_SIZE}): {model_status}",
@@ -3414,7 +3273,7 @@ async def sttstatus(event) -> None:
 
 # --- Application Lifecycle Hooks ---
 
-async def post_init() -> None:
+async def post_init(application: Application) -> None:
     """Initialize services after application startup."""
     try:
         logger.info("🚀 Initializing call framework...")
@@ -3440,7 +3299,7 @@ async def post_init() -> None:
     except Exception as e:
         logger.error(f"Error during post_init: {e}", exc_info=True)
 
-async def post_shutdown() -> None:
+async def post_shutdown(application: Application) -> None:
     """Clean up resources on shutdown."""
     try:
         logger.info("🛑 Shutting down call framework...")
@@ -3460,235 +3319,123 @@ async def post_shutdown() -> None:
     except Exception as e:
         logger.error(f"Error during post_shutdown: {e}", exc_info=True)
 
-# --- Main Function (Telethon) ---
-async def async_main():
-    """Async main function using Telethon"""
-    global global_context, telethon_client
-    
-    # Ensure necessary files exist
+# --- Main Function ---
+def main() -> None:
+    # Ensure necessary directories/files exist (optional, helps first run)
     if not os.path.exists(CONFIG_FILE): save_config({})
     if not os.path.exists(MEMORY_FILE): save_memory({})
     if not os.path.exists(GOSSIP_FILE): save_gossip({})
+
+    application = Application.builder().token(BOT_TOKEN).post_init(post_init).post_shutdown(post_shutdown).build()
     
-    # Initialize Telethon client
-    client = TelegramClient('bot_session', int(API_ID), API_HASH)
-    await client.start(bot_token=BOT_TOKEN)
-    
-    # Initialize context
-    global_context = BotContext(client)
-    await global_context.initialize()
-    telethon_client = client
-    
-    logger.info("✅ Bot started successfully")
-    
-    # Initialize call framework if configured
-    if API_ID and API_HASH:
-        try:
-            logger.info("✅ Telethon client ready for calls")
-        except Exception as e:
-            logger.warning(f"⚠️ Call features initialization error: {e}")
-    
-    # Schedule daily reminder
+# Load config for reminder time
     config = load_config()
     reminder_time_str = config.get("reminder_time", "04:00")
+
+    # --- Register ALL Handlers ---
+    handlers = [
+        # ... (Your list of CommandHandlers and MessageHandlers remains the same) ...
+        PollAnswerHandler(poll_answer_handler), # Handles answers to quiz polls
+        MessageHandler(filters.TEXT & ~filters.COMMAND, master_text_handler) # Handles registration, replies, mentions etc.
+    ]
+
+    # --- Schedule Daily Reminder (AFTER application is built) ---
     try:
         hour, minute = map(int, reminder_time_str.split(':'))
+        # Access job_queue AFTER application is built and handlers are added
+        job_queue = application.job_queue
         reminder_time = time(hour=hour, minute=minute, tzinfo=pytz.timezone('Asia/Kolkata'))
-        if not global_global_context.job_queue.get_jobs_by_name("daily_reminder"):
-            global_global_context.job_queue.run_daily(send_daily_reminder, time=reminder_time, name="daily_reminder")
-            logger.info(f"Daily reminder scheduled for {reminder_time_str} IST")
+        # Add the job if it doesn't exist already
+        if not job_queue.get_jobs_by_name("daily_reminder"):
+            job_queue.run_daily(send_daily_reminder, time=reminder_time, name="daily_reminder")
+            logger.info(f"Daily reminder job scheduled for {reminder_time_str} IST.")
+        else:
+            logger.info("Daily reminder job already scheduled.")
+    except ValueError:
+        logger.error(f"Invalid reminder time format: {reminder_time_str}. Reminder not scheduled.")
     except Exception as e:
-        logger.error(f"Error scheduling daily reminder: {e}")
-    
-    # Register command handlers
-    # Commands are registered via @client.on decorators - see handler definitions
-    
+        logger.error(f"Error scheduling daily reminder: {e}") # Catch other potential errors
 
-    # ========== REGISTER EVENT HANDLERS ==========
-    
-    # Command Handlers
-    @client.on(events.NewMessage(pattern='/start'))
-    async def cmd_start(event): await help_command(event)
-    
-    @client.on(events.NewMessage(pattern='/help'))
-    async def cmd_help(event): await help_command(event)
-    
-    @client.on(events.NewMessage(pattern='/ai'))
-    async def cmd_ai(event): await smart_ai_handler(event)
-    
-    @client.on(events.NewMessage(pattern='/react'))
-    async def cmd_react(event): await force_react_command(event)
-    
-    @client.on(events.NewMessage(pattern='/audio'))
-    async def cmd_audio(event): await toggle_audio_mode_handler(event)
-    
-    @client.on(events.NewMessage(pattern='/chem'))
-    async def cmd_chem(event): await chem_handler(event)
-    
-    @client.on(events.NewMessage(pattern='/tex'))
-    async def cmd_tex(event): await latex_handler(event)
-    
-    @client.on(events.NewMessage(pattern='/chatid'))
-    async def cmd_chatid(event): await get_chat_id(event)
-    
-    @client.on(events.NewMessage(pattern='/summarize'))
-    async def cmd_summarize(event): await summarize_command(event)
-    
-    @client.on(events.NewMessage(pattern='/studypoll'))
-    async def cmd_studypoll(event): await studypoll_command(event)
-    
-    @client.on(events.NewMessage(pattern='/remember'))
-    async def cmd_remember(event): await remember_command(event)
-    
-    @client.on(events.NewMessage(pattern='/recall'))
-    async def cmd_recall(event): await recall_command(event)
-    
-    @client.on(events.NewMessage(pattern='/forget'))
-    async def cmd_forget(event): await forget_command(event)
-    
-    @client.on(events.NewMessage(pattern='/nanoedit'))
-    async def cmd_nanoedit(event): await nanoedit_handler(event)
-    
-    @client.on(events.NewMessage(pattern='/askit'))
-    async def cmd_askit(event): await askit_handler(event)
-    
-    @client.on(events.NewMessage(pattern='/videoedit'))
-    async def cmd_videoedit(event): await videoedit_handler(event)
-    
-    @client.on(events.NewMessage(pattern='/boton'))
-    async def cmd_boton(event): await turn_ai_on(event)
-    
-    @client.on(events.NewMessage(pattern='/botoff'))
-    async def cmd_botoff(event): await turn_ai_off(event)
-    
-    @client.on(events.NewMessage(pattern='/aistatus'))
-    async def cmd_aistatus(event): await check_ai_status(event)
-    
-    @client.on(events.NewMessage(pattern='/randomon'))
-    async def cmd_randomon(event): await turn_random_chat_on(event)
-    
-    @client.on(events.NewMessage(pattern='/randomoff'))
-    async def cmd_randomoff(event): await turn_random_chat_off(event)
-    
-    @client.on(events.NewMessage(pattern='/randomstatus'))
-    async def cmd_randomstatus(event): await check_random_status(event)
-    
-    @client.on(events.NewMessage(pattern='/testrandom'))
-    async def cmd_testrandom(event): await test_random_handler(event)
-    
-    @client.on(events.NewMessage(pattern='/on'))
-    async def cmd_modon(event): await turn_moderation_on(event)
-    
-    @client.on(events.NewMessage(pattern='/off'))
-    async def cmd_modoff(event): await turn_moderation_off(event)
-    
-    @client.on(events.NewMessage(pattern='/time'))
-    async def cmd_time(event): await set_reminder_time_handler(event)
-    
-    @client.on(events.NewMessage(pattern='/callon'))
-    async def cmd_callon(event): await turn_proactive_calls_on(event)
-    
-    @client.on(events.NewMessage(pattern='/calloff'))
-    async def cmd_calloff(event): await turn_proactive_calls_off(event)
-    
-    @client.on(events.NewMessage(pattern='/callstatus'))
-    async def cmd_callstatus(event): await check_proactive_calls_status(event)
-    
-    @client.on(events.NewMessage(pattern='/callquiet'))
-    async def cmd_callquiet(event): await set_call_quiet_hours(event)
-    
-    @client.on(events.NewMessage(pattern='/callconfig'))
-    async def cmd_callconfig(event): await configure_call_settings(event)
-    
-    @client.on(events.NewMessage(pattern='/joincall'))
-    async def cmd_joincall(event): await joincall_command(event)
-    
-    @client.on(events.NewMessage(pattern='/leavecall'))
-    async def cmd_leavecall(event): await leavecall_command(event)
-    
-    @client.on(events.NewMessage(pattern='/callinfo'))
-    async def cmd_callinfo(event): await callinfo_command(event)
-    
-    @client.on(events.NewMessage(pattern='/ttson'))
-    async def cmd_ttson(event): await ttson(event)
-    
-    @client.on(events.NewMessage(pattern='/ttsoff'))
-    async def cmd_ttsoff(event): await ttsoff(event)
-    
-    @client.on(events.NewMessage(pattern='/ttsconfig'))
-    async def cmd_ttsconfig(event): await ttsconfig(event)
-    
-    @client.on(events.NewMessage(pattern='/ttsstatus'))
-    async def cmd_ttsstatus(event): await ttsstatus(event)
-    
-    @client.on(events.NewMessage(pattern='/stton'))
-    async def cmd_stton(event): await stton(event)
-    
-    @client.on(events.NewMessage(pattern='/sttoff'))
-    async def cmd_sttoff(event): await sttoff(event)
-    
-    @client.on(events.NewMessage(pattern='/sttconfig'))
-    async def cmd_sttconfig(event): await sttconfig(event)
-    
-    @client.on(events.NewMessage(pattern='/sttstatus'))
-    async def cmd_sttstatus(event): await sttstatus(event)
-    
-    @client.on(events.NewMessage(pattern='/ban'))
-    async def cmd_ban(event): await ban_user(event)
-    
-    @client.on(events.NewMessage(pattern='/mute'))
-    async def cmd_mute(event): await mute_user(event)
-    
-    @client.on(events.NewMessage(pattern='/unmute'))
-    async def cmd_unmute(event): await unmute_user(event)
-    
-    @client.on(events.NewMessage(pattern='/delete'))
-    async def cmd_delete(event): await delete_message(event)
-    
-    @client.on(events.NewMessage(pattern='/lock'))
-    async def cmd_lock(event): await lock_chat(event)
-    
-    @client.on(events.NewMessage(pattern='/unlock'))
-    async def cmd_unlock(event): await unlock_chat(event)
-    
-    @client.on(events.NewMessage(pattern='/ai1|/ai618'))
-    async def cmd_simple_ai(event): await simple_ai_handler(event)
-    
-    # Voice message handler
-    @client.on(events.NewMessage())
-    async def voice_handler(event):
-        if event.voice:
-            await handle_call_audio(event)
-    
-    # Master text handler for all non-command text
-    @client.on(events.NewMessage())
-    async def text_handler(event):
-        if event.text and not event.text.startswith('/'):
-            await master_text_handler(event)
-    
-    # Poll answer handler
-    @client.on(events.Raw)
-    async def poll_handler(event):
-        if isinstance(event, types.UpdateMessagePollVote):
-            # Convert to our expected format
-            answer_event = type('PollAnswer', (), {
-                'poll_id': event.poll_id,
-                'user': await client.get_entity(event.user_id),
-                'option_ids': event.options
-            })()
-            await poll_answer_handler(answer_event)
-    
-    logger.info("✅ All event handlers registered")
+    # --- Register ALL Handlers ---
+    handlers = [
+        # Core Commands
+        CommandHandler("start", help_command),
+        CommandHandler("help", help_command),
+        CommandHandler("ai", smart_ai_handler), # Handles trivia, gossip, stickers, web search
 
-    # Start keep-alive server
+        # Utility Commands
+        CommandHandler("react", force_react_command),
+        CommandHandler("audio", toggle_audio_mode_handler),
+        CommandHandler("chem", chem_handler),
+        CommandHandler("tex", latex_handler),
+        CommandHandler("chatid", get_chat_id),
+        CommandHandler("summarize", summarize_command),
+        CommandHandler("studypoll", studypoll_command), # Manual poll creation
+
+        # Memory Commands
+        CommandHandler("remember", remember_command),
+        CommandHandler("recall", recall_command),
+        CommandHandler("forget", forget_command),
+
+        # Image Commands
+        CommandHandler("nanoedit", nanoedit_handler),
+        CommandHandler("askit", askit_handler),
+        CommandHandler("videoedit", videoedit_handler),
+        # CommandHandler("image", image_generation_handler), # Can be re-added if direct access needed
+
+        # Settings Commands (Admin)
+        CommandHandler("boton", turn_ai_on), CommandHandler("botoff", turn_ai_off),
+        CommandHandler("aistatus", check_ai_status),
+        CommandHandler("randomon", turn_random_chat_on), CommandHandler("randomoff", turn_random_chat_off),
+        CommandHandler("randomstatus", check_random_status),
+        CommandHandler("testrandom", test_random_handler),
+        CommandHandler("on", turn_moderation_on), CommandHandler("off", turn_moderation_off),
+        CommandHandler("time", set_reminder_time_handler),
+
+        # Proactive Call Commands (Admin)
+        CommandHandler("callon", turn_proactive_calls_on),
+        CommandHandler("calloff", turn_proactive_calls_off),
+        CommandHandler("callstatus", check_proactive_calls_status),
+        CommandHandler("callquiet", set_call_quiet_hours),
+        CommandHandler("callconfig", configure_call_settings),
+        
+        # Call Control Commands (Admin)
+        CommandHandler("joincall", joincall_command),
+        CommandHandler("leavecall", leavecall_command),
+        CommandHandler("callinfo", callinfo_command),
+
+        # TTS/STT Commands (Admin)
+        CommandHandler("ttson", ttson),
+        CommandHandler("ttsoff", ttsoff),
+        CommandHandler("ttsconfig", ttsconfig),
+        CommandHandler("ttsstatus", ttsstatus),
+        CommandHandler("stton", stton),
+        CommandHandler("sttoff", sttoff),
+        CommandHandler("sttconfig", sttconfig),
+        CommandHandler("sttstatus", sttstatus),
+
+        # Moderation Commands (Admin & Mod Enabled)
+        CommandHandler("ban", ban_user), CommandHandler("mute", mute_user),
+        CommandHandler("unmute", unmute_user), CommandHandler("delete", delete_message),
+        CommandHandler("lock", lock_chat), CommandHandler("unlock", unlock_chat),
+
+        # Optional simple AI handler
+        CommandHandler(["ai1", "ai618"], simple_ai_handler),
+
+        # Voice message handler for proactive calls
+        MessageHandler(filters.VOICE, handle_call_audio),
+
+        # Master handler for all non-command text (handles trivia, replies, mentions, reactions, history)
+        MessageHandler(filters.TEXT & ~filters.COMMAND, master_text_handler)
+    ]
+    application.add_handlers(handlers)
+
+    # Start the keep-alive server thread
     keep_alive()
     
     logger.info("Bot is running...")
-    await client.run_until_disconnected()
-
-def main():
-    """Entry point"""
-    asyncio.run(async_main())
+    # Run the bot until the user presses Ctrl-C
+    application.run_polling(allowed_updates=Update.ALL_TYPES) # Process all update types
 
 if __name__ == '__main__':
     main()
