@@ -34,7 +34,8 @@ class UserbotClient:
         api_hash: str,
         phone_number: str,
         session_path: str = "userbot_session",
-        use_string_session: bool = False
+        use_string_session: bool = False,
+        session_string: Optional[str] = None
     ):
         """
         Initialize userbot client configuration.
@@ -45,12 +46,14 @@ class UserbotClient:
             phone_number: Phone number in international format (e.g., +1234567890)
             session_path: Path for session file (default: userbot_session)
             use_string_session: Use string session instead of file (for cloud deployment)
+            session_string: Pre-existing session string (for Docker/cloud deployment)
         """
         self.api_id = api_id
         self.api_hash = api_hash
         self.phone_number = phone_number
         self.session_path = session_path
         self.use_string_session = use_string_session
+        self.session_string = session_string
         self.client: Optional[TelegramClient] = None
         self._connected = False
         
@@ -79,9 +82,15 @@ class UserbotClient:
         """
         try:
             # Create session
-            if self.use_string_session:
-                session_string = os.environ.get('TELETHON_SESSION', None)
-                session = StringSession(session_string) if session_string else StringSession()
+            if self.use_string_session or self.session_string:
+                # Use SESSION_STRING from environment or provided session_string
+                session_str = self.session_string or os.environ.get('SESSION_STRING', None)
+                if not session_str:
+                    logger.error("❌ SESSION_STRING environment variable not set!")
+                    logger.error("For Docker/cloud deployment, you must provide a valid SESSION_STRING")
+                    logger.error("Generate one locally first using the userbot.py test function")
+                    raise ValueError("SESSION_STRING required for cloud deployment but not found")
+                session = StringSession(session_str)
             else:
                 session = self.session_path
             
@@ -102,8 +111,14 @@ class UserbotClient:
             
             # Check if already authorized
             if not await self.client.is_user_authorized():
-                logger.info("User not authorized, starting authentication flow...")
-                await self._authenticate(force_sms)
+                # In Docker/cloud environment with string session, fail immediately
+                if self.use_string_session or self.session_string:
+                    logger.error("❌ Session not authorized! SESSION_STRING is invalid or expired.")
+                    logger.error("Please generate a new session string locally and update SESSION_STRING environment variable")
+                    raise RuntimeError("Invalid or expired SESSION_STRING - cannot authenticate interactively in Docker")
+                else:
+                    logger.info("User not authorized, starting authentication flow...")
+                    await self._authenticate(force_sms)
             else:
                 logger.info("✅ Session valid, user already authorized")
             
@@ -113,12 +128,12 @@ class UserbotClient:
             
             self._connected = True
             
-            # Save string session if using it
-            if self.use_string_session and isinstance(session, StringSession):
+            # Save string session if using it and it's a new session
+            if (self.use_string_session or self.session_string) and isinstance(session, StringSession):
                 session_string = session.save()
                 logger.info(f"String session saved (length: {len(session_string)})")
-                logger.info("Save this to TELETHON_SESSION env var for future use:")
-                logger.info(f"TELETHON_SESSION={session_string}")
+                logger.info("Save this to SESSION_STRING env var for future use:")
+                logger.info(f"SESSION_STRING={session_string}")
             
             return self.client
             
@@ -259,7 +274,7 @@ def create_userbot_from_env(
     - API_HASH: Telegram API hash
     - PHONE_NUMBER: Phone number in international format
     - SESSION_PATH (optional): Custom session file path
-    - TELETHON_SESSION (optional): String session for cloud deployment
+    - SESSION_STRING (optional): String session for cloud deployment
     
     Args:
         session_path: Override session path from env
@@ -275,6 +290,7 @@ def create_userbot_from_env(
     api_id = os.environ.get('API_ID')
     api_hash = os.environ.get('API_HASH')
     phone_number = os.environ.get('PHONE_NUMBER')
+    session_string = os.environ.get('SESSION_STRING')
     
     # Validate required credentials
     if not api_id:
@@ -294,13 +310,18 @@ def create_userbot_from_env(
     except ValueError:
         raise ValueError(f"Invalid API_ID: {api_id}. Must be a number.")
     
+    # Auto-detect if we should use string session (if SESSION_STRING is provided)
+    if session_string:
+        use_string_session = True
+    
     # Create and return userbot client
     return UserbotClient(
         api_id=api_id,
         api_hash=api_hash,
         phone_number=phone_number,
         session_path=session_path,
-        use_string_session=use_string_session
+        use_string_session=use_string_session,
+        session_string=session_string
     )
 
 

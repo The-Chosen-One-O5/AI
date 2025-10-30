@@ -1,21 +1,16 @@
-    from flask import Flask
-    from threading import Thread
-    import os # Import os to potentially get port
+import os
+from flask import Flask
 
-    app = Flask('')
+app = Flask(__name__)
 
-    @app.route('/')
-    def home():
-        return "I'm alive!"
+@app.route('/')
+def home():
+    return "Bot is running!", 200
 
-    def run():
-        # Render provides the PORT environment variable
-        port = int(os.environ.get('PORT', 8080)) # Default if PORT isn't set
-        app.run(host='0.0.0.0', port=port)
+@app.route('/health')
+def health():
+    return "OK", 200
 
-    def keep_alive():
-        t = Thread(target=run)
-        t.start()
-        print("Keep-alive server started.")
-    
-
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)

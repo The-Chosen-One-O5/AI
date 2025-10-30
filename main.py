@@ -11,7 +11,6 @@ from collections import deque
 import shlex
 import asyncio
 import re
-from threading import Thread # Needed for keep_alive
 
 # --- Library Imports ---
 import replicate
@@ -24,7 +23,6 @@ from rdkit.Chem.Draw import rdMolDraw2D
 from PIL import Image
 from bs4 import BeautifulSoup
 from telegraph import Telegraph
-from flask import Flask # Needed for keep_alive
 
 # --- TTS/STT Imports ---
 import edge_tts
@@ -50,23 +48,6 @@ from telethon.tl.functions.messages import SendReactionRequest
 
 # --- Userbot Bootstrap ---
 from userbot import create_userbot_from_env, UserbotClient
-
-
-# --- Keep Alive Server Setup ---
-keep_alive_app = Flask('')
-
-@keep_alive_app.route('/')
-def keep_alive_home():
-    return "I'm alive!"
-
-def run_keep_alive():
-    port = int(os.environ.get('PORT', 8080))
-    keep_alive_app.run(host='0.0.0.0', port=port)
-
-def keep_alive():
-    t = Thread(target=run_keep_alive)
-    t.start()
-    print("Keep-alive server started.")
 
 # --- Configuration (using Environment Variables) ---
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
@@ -3717,9 +3698,6 @@ async def async_main():
             await poll_answer_handler(answer_event)
     
     logger.info("✅ All event handlers registered")
-
-    # Start keep-alive server
-    keep_alive()
     
     logger.info("🤖 Userbot is running and connected...")
     logger.info("Press Ctrl+C to stop")
