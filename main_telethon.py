@@ -43,10 +43,9 @@ import tempfile
 import subprocess
 from pathlib import Path
 
-# --- pytgcalls Imports ---
-from pytgcalls import PyTgCalls, StreamType
-from pytgcalls.types.input_stream import AudioPiped, AudioVideoPiped
-from pytgcalls.types.input_stream.quality import HighQualityAudio
+# --- pytgcalls Imports (v2.2.8 API) ---
+from pytgcalls import PyTgCalls
+from pytgcalls.types import MediaStream, AudioQuality, VideoQuality
 
 # --- Keep Alive Server Setup ---
 keep_alive_app = Flask('')

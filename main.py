@@ -34,10 +34,9 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Tuple
 
-# --- pytgcalls Imports ---
-from pytgcalls import PyTgCalls, StreamType
-from pytgcalls.types.input_stream import AudioPiped, AudioVideoPiped
-from pytgcalls.types.input_stream.quality import HighQualityAudio
+# --- pytgcalls Imports (v2.2.8 API) ---
+from pytgcalls import PyTgCalls
+from pytgcalls.types import MediaStream, AudioQuality, VideoQuality
 from telethon import TelegramClient
 
 # --- Telethon Imports (Replaces python-telegram-bot) ---
@@ -772,10 +771,13 @@ async def join_voice_chat(chat_id: int, auto_join: bool = False) -> bool:
             silent_audio_path = temp_file.name
         
         try:
-            await pytg_client.join_group_call(
+            # Use the new pytgcalls v2 API with MediaStream
+            await pytg_client.play(
                 chat_id,
-                AudioPiped(silent_audio_path),
-                stream_type=StreamType().pulse_stream
+                MediaStream(
+                    audio_path=silent_audio_path,
+                    audio_parameters=AudioQuality.HIGH
+                )
             )
             
             # Update call state
@@ -826,8 +828,8 @@ async def leave_voice_chat(chat_id: int) -> bool:
         
         logger.info(f"Leaving voice chat in chat {chat_id}...")
         
-        # Leave the group call
-        await pytg_client.leave_group_call(chat_id)
+        # Leave the call using new pytgcalls v2 API
+        await pytg_client.leave_call(chat_id)
         
         # Update call state
         if chat_id_str in active_calls:
@@ -913,10 +915,13 @@ async def stream_tts_to_call(chat_id: int, text: str, voice: str = None, rate: s
                 logger.error("Failed to convert audio for streaming")
                 return False
             
-            # Change stream to the new audio
-            await pytg_client.change_stream(
+            # Use new pytgcalls v2 API to play the audio
+            await pytg_client.play(
                 chat_id,
-                AudioPiped(output_path)
+                MediaStream(
+                    audio_path=output_path,
+                    audio_parameters=AudioQuality.HIGH
+                )
             )
             
             logger.info(f"✅ TTS audio streamed to call in chat {chat_id}")
@@ -964,10 +969,13 @@ async def play_audio_to_call(chat_id: int, audio_path: str) -> bool:
             if not success:
                 return False
             
-            # Change stream to play the audio
-            await pytg_client.change_stream(
+            # Use new pytgcalls v2 API to play the audio
+            await pytg_client.play(
                 chat_id,
-                AudioPiped(output_path)
+                MediaStream(
+                    audio_path=output_path,
+                    audio_parameters=AudioQuality.HIGH
+                )
             )
             
             logger.info(f"✅ Audio file played to call in chat {chat_id}")
