@@ -48,6 +48,9 @@ from telethon.tl.functions.channels import EditBannedRequest
 from telethon.tl.types import ChatBannedRights, ChannelParticipantsAdmins
 from telethon.tl.functions.messages import SendReactionRequest
 
+# --- Userbot Bootstrap ---
+from userbot import create_userbot_from_env, UserbotClient
+
 
 # --- Keep Alive Server Setup ---
 keep_alive_app = Flask('')
@@ -83,9 +86,13 @@ CEREBRAS_API_KEY = os.environ.get('CEREBRAS_API_KEY')
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
 SAMURAI_API_KEY = os.environ.get('SAMURAI_API_KEY') # New key for Text-to-Video
 
+# --- Telethon Userbot Configuration ---
+API_ID = os.environ.get('API_ID')  # Telegram API ID for Telethon userbot
+API_HASH = os.environ.get('API_HASH')  # Telegram API Hash for Telethon userbot
+PHONE_NUMBER = os.environ.get('PHONE_NUMBER')  # Phone number for userbot authentication
+SESSION_PATH = os.environ.get('SESSION_PATH', 'userbot_session')  # Session file path
+
 # --- TTS/STT Configuration ---
-API_ID = os.environ.get('API_ID')  # Telegram API ID for Telethon
-API_HASH = os.environ.get('API_HASH')  # Telegram API Hash for Telethon
 WHISPER_MODEL_SIZE = os.environ.get('WHISPER_MODEL_SIZE', 'base')  # tiny, base, small, medium, large
 EDGE_TTS_VOICE = os.environ.get('EDGE_TTS_VOICE', 'en-US-AriaNeural')  # Default voice
 EDGE_TTS_RATE = os.environ.get('EDGE_TTS_RATE', '+0%')  # Speech rate adjustment
@@ -112,10 +119,21 @@ FFMPEG_PATH = os.environ.get('FFMPEG_PATH', 'ffmpeg')  # FFmpeg binary path
 # Note: Update these models in their respective functions if providers deprecate them.
 # Check deprecation notices: https://console.groq.com/docs/deprecations
 
-# Exit if essential token is missing
-if not BOT_TOKEN:
-    print("FATAL ERROR: BOT_TOKEN environment variable not set!")
+# Validate essential credentials
+if not API_ID:
+    print("FATAL ERROR: API_ID environment variable not set!")
+    print("Get your API credentials from https://my.telegram.org")
     exit()
+if not API_HASH:
+    print("FATAL ERROR: API_HASH environment variable not set!")
+    print("Get your API credentials from https://my.telegram.org")
+    exit()
+if not PHONE_NUMBER:
+    print("FATAL ERROR: PHONE_NUMBER environment variable not set!")
+    print("Use international format like +1234567890")
+    exit()
+
+# Setup optional API tokens
 if REPLICATE_API_KEY:
     os.environ['REPLICATE_API_TOKEN'] = REPLICATE_API_KEY # Replicate specifically needs this env var
 else:
@@ -134,6 +152,7 @@ tts_queues = {}  # {chat_id: asyncio.Queue for TTS chunks}
 whisper_model: Optional[WhisperModel] = None
 telethon_client: Optional[TelegramClient] = None
 pytgcalls_instances = {}  # {chat_id: PyTgCalls instance}
+userbot_instance: Optional[UserbotClient] = None  # Global userbot client manager
 
 # --- Daily Reminder Configuration ---
 JEE_MAINS_DATE = datetime(2026, 1, 22).date()
@@ -289,7 +308,9 @@ def load_config() -> dict:
             "audio_mode_config": {}, "proactive_call_config": {},
             "call_quiet_hours": {},  # {chat_id: {"start": "22:00", "end": "08:00"}}
             "tts_config": {},  # {chat_id: {"enabled": bool, "voice": str, "rate": str, "language": str}}
-            "stt_config": {}   # {chat_id: {"enabled": bool, "language": str, "sensitivity": float}}
+            "stt_config": {},   # {chat_id: {"enabled": bool, "language": str, "sensitivity": float}}
+            "session_path": "userbot_session",  # Telethon session file path
+            "use_string_session": False  # Use string session for cloud deployment
         }
 
 def save_config(config: dict) -> None:
@@ -325,7 +346,8 @@ def save_gossip(gossip: dict) -> None:
 
 # --- Helper Functions ---
 
-async def delete_message_callback(context: ContextTypes.DEFAULT_TYPE):
+async def delete_message_callback(context):
+    """Callback to delete a message after delay"""
     job = context.job
     try:
         await global_context.bot.delete_message(chat_id=job.data['chat_id'], message_id=job.data['message_id'])
@@ -3462,31 +3484,47 @@ async def post_shutdown() -> None:
 
 # --- Main Function (Telethon) ---
 async def async_main():
-    """Async main function using Telethon"""
-    global global_context, telethon_client
+    """Async main function using Telethon userbot"""
+    global global_context, telethon_client, userbot_instance
     
     # Ensure necessary files exist
     if not os.path.exists(CONFIG_FILE): save_config({})
     if not os.path.exists(MEMORY_FILE): save_memory({})
     if not os.path.exists(GOSSIP_FILE): save_gossip({})
     
-    # Initialize Telethon client
-    client = TelegramClient('bot_session', int(API_ID), API_HASH)
-    await client.start(bot_token=BOT_TOKEN)
+    # Load config for session settings
+    config = load_config()
+    session_path = config.get("session_path", "userbot_session")
+    use_string_session = config.get("use_string_session", False)
     
-    # Initialize context
-    global_context = BotContext(client)
-    await global_context.initialize()
-    telethon_client = client
-    
-    logger.info("✅ Bot started successfully")
-    
-    # Initialize call framework if configured
-    if API_ID and API_HASH:
-        try:
-            logger.info("✅ Telethon client ready for calls")
-        except Exception as e:
-            logger.warning(f"⚠️ Call features initialization error: {e}")
+    try:
+        # Initialize Telethon userbot client
+        logger.info("🚀 Initializing Telethon userbot...")
+        userbot_instance = create_userbot_from_env(
+            session_path=session_path,
+            use_string_session=use_string_session
+        )
+        
+        # Start userbot and handle authentication
+        client = await userbot_instance.start()
+        
+        # Initialize context
+        global_context = BotContext(client)
+        await global_context.initialize()
+        telethon_client = client
+        
+        logger.info("✅ Userbot started successfully")
+        
+    except ValueError as e:
+        logger.error(f"❌ Configuration error: {e}")
+        logger.error("Please check your API_ID, API_HASH, and PHONE_NUMBER in .env file")
+        raise
+    except RuntimeError as e:
+        logger.error(f"❌ Connection error: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"❌ Unexpected error during startup: {e}", exc_info=True)
+        raise
     
     # Schedule daily reminder
     config = load_config()
@@ -3494,8 +3532,8 @@ async def async_main():
     try:
         hour, minute = map(int, reminder_time_str.split(':'))
         reminder_time = time(hour=hour, minute=minute, tzinfo=pytz.timezone('Asia/Kolkata'))
-        if not global_global_context.job_queue.get_jobs_by_name("daily_reminder"):
-            global_global_context.job_queue.run_daily(send_daily_reminder, time=reminder_time, name="daily_reminder")
+        if not global_context.job_queue.get_jobs_by_name("daily_reminder"):
+            global_context.job_queue.run_daily(send_daily_reminder, time=reminder_time, name="daily_reminder")
             logger.info(f"Daily reminder scheduled for {reminder_time_str} IST")
     except Exception as e:
         logger.error(f"Error scheduling daily reminder: {e}")
@@ -3683,8 +3721,19 @@ async def async_main():
     # Start keep-alive server
     keep_alive()
     
-    logger.info("Bot is running...")
-    await client.run_until_disconnected()
+    logger.info("🤖 Userbot is running and connected...")
+    logger.info("Press Ctrl+C to stop")
+    
+    try:
+        await client.run_until_disconnected()
+    except KeyboardInterrupt:
+        logger.info("\n⏹️  Received shutdown signal...")
+    finally:
+        # Graceful shutdown
+        logger.info("Shutting down userbot...")
+        if userbot_instance:
+            await userbot_instance.disconnect()
+        logger.info("✅ Shutdown complete")
 
 def main():
     """Entry point"""
