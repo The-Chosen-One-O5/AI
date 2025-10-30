@@ -12,7 +12,6 @@ replicate
 telegraph
 telethon
 tgcrypto
-pytgcalls
 pydub
 edge-tts
 faster-whisper
