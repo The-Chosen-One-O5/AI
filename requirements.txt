@@ -6,7 +6,6 @@ groq
 httpx
 openai
 Pillow
-python-telegram-bot[job-queue]
 pytz
 rdkit
 replicate
