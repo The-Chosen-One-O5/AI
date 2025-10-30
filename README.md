@@ -58,14 +58,26 @@ git clone <repository-url>
 cd ai618-bot
 ```
 
-2. Install dependencies:
+2. Install FFmpeg (required for audio processing):
+```bash
+# Ubuntu/Debian
+sudo apt update && sudo apt install ffmpeg
+
+# macOS
+brew install ffmpeg
+
+# Windows
+# Download from https://ffmpeg.org/download.html
+```
+
+3. Install Python dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Set up environment variables (see Configuration)
+4. Set up environment variables (see Configuration)
 
-4. Run the bot:
+5. Run the bot:
 ```bash
 python main.py
 ```
@@ -144,6 +156,12 @@ The bot creates and manages these JSON files:
 ### Voice & Call Features
 
 ```
+# Call Control Commands
+/joincall           - Manually join a voice chat (Admin)
+/leavecall          - Manually leave a voice chat (Admin)
+/callinfo           - Show detailed call state and framework status
+
+# Call Configuration
 /audio              - Toggle voice responses (Admin)
 /callon             - Enable proactive call participation (Admin)
 /calloff            - Disable proactive calls (Admin)
@@ -214,13 +232,23 @@ The bot creates and manages these JSON files:
 
 ## Voice Call Features with TTS/STT
 
-The bot can participate in group calls with real-time speech recognition and voice synthesis. See [PROACTIVE_CALLS.md](PROACTIVE_CALLS.md) for detailed documentation.
+The bot can participate in group calls with real-time speech recognition and voice synthesis using the integrated **pytgcalls + Telethon call framework**. See [PROACTIVE_CALLS.md](PROACTIVE_CALLS.md) and [TTS_STT_GUIDE.md](TTS_STT_GUIDE.md) for detailed documentation.
 
-### Key Features:
+### Call Framework Features:
+- 📞 **Join/Leave Voice Chats**: Manual and automatic call participation
+- 🔄 **Lifecycle Management**: Startup/shutdown hooks for graceful initialization and cleanup
+- 🎙️ **Audio Stream Management**: Playback queue, volume controls, and audio frame capture
+- 🔊 **Real-time Audio Streaming**: Direct TTS audio streaming to voice calls via pytgcalls
+- 📥 **Incoming Audio Capture**: Buffer and process audio frames for STT
+- 🔁 **Reconnection Logic**: Automatic retries with flood wait handling
+- 📊 **Call State Tracking**: Per-chat state management (joined/left/idle)
+- 🛡️ **Error Handling**: Graceful error recovery with retry logic and logging
+
+### TTS/STT Features:
 - 🎙️ **Local STT**: Fast transcription using faster-whisper (CPU/GPU) with Groq fallback
 - 🔊 **Edge-TTS**: Natural voice synthesis with 100+ voices in multiple languages
 - 🎵 **pytgcalls Integration**: Direct audio streaming to voice calls
-- 🔄 **FFmpeg Processing**: Seamless audio format conversions
+- 🔄 **FFmpeg Processing**: Seamless audio format conversions (PCM, Opus, WAV)
 - 🧠 **Context Awareness**: Merges call transcripts with chat history
 - 💬 **Smart Responses**: Streamed audio or voice message fallback
 - ⏰ **Quiet Hours**: Configurable do-not-disturb periods
@@ -230,28 +258,37 @@ The bot can participate in group calls with real-time speech recognition and voi
 
 ### Quick Setup:
 ```bash
-# 1. Enable STT for voice message transcription
+# 1. Manually join a voice chat
+/joincall
+
+# 2. Check call framework status
+/callinfo
+
+# 3. Enable STT for voice message transcription
 /stton
 
-# 2. Configure STT language (optional)
+# 4. Configure STT language (optional)
 /sttconfig en
 
-# 3. Enable TTS for voice responses
+# 5. Enable TTS for voice responses
 /ttson
 
-# 4. Configure TTS voice and rate (optional)
+# 6. Configure TTS voice and rate (optional)
 /ttsconfig en-US-AriaNeural +10%
 
-# 5. Enable proactive call participation (optional)
+# 7. Enable proactive call participation (optional)
 /callon
 
-# 6. Set quiet hours (optional)
+# 8. Set quiet hours (optional)
 /callquiet 22:00 08:00
 
-# 7. Check status
+# 9. Check status
 /sttstatus
 /ttsstatus
 /callstatus
+
+# 10. Leave the call when done
+/leavecall
 ```
 
 ## Architecture

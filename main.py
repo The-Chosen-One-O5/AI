@@ -509,38 +509,86 @@ async def transcribe_with_whisper(audio_bytes: bytes, language: str = "en") -> O
         logger.error(f"Whisper transcription failed: {e}", exc_info=True)
         return None
 
+async def initialize_telethon_client():
+    """Initialize the global Telethon client for pytgcalls."""
+    global telethon_client
+    
+    if telethon_client is not None:
+        return telethon_client
+    
+    if not API_ID or not API_HASH:
+        logger.error("API_ID and API_HASH required for Telethon/pytgcalls")
+        return None
+    
+    try:
+        logger.info("Initializing Telethon client...")
+        telethon_client = TelegramClient(
+            'bot_session',
+            int(API_ID),
+            API_HASH
+        )
+        await telethon_client.start(bot_token=BOT_TOKEN)
+        logger.info("✅ Telethon client started successfully")
+        return telethon_client
+    
+    except Exception as e:
+        logger.error(f"Failed to initialize Telethon client: {e}", exc_info=True)
+        telethon_client = None
+        return None
+
+async def shutdown_telethon_client():
+    """Gracefully shutdown the Telethon client."""
+    global telethon_client, pytgcalls_instances
+    
+    try:
+        # Disconnect all pytgcalls instances first
+        for chat_id, pytg_client in list(pytgcalls_instances.items()):
+            try:
+                await leave_voice_chat(int(chat_id))
+            except Exception as e:
+                logger.error(f"Error leaving call in chat {chat_id}: {e}")
+        
+        pytgcalls_instances.clear()
+        
+        # Disconnect Telethon client
+        if telethon_client:
+            await telethon_client.disconnect()
+            telethon_client = None
+            logger.info("✅ Telethon client disconnected")
+    
+    except Exception as e:
+        logger.error(f"Error during Telethon shutdown: {e}", exc_info=True)
+
 async def initialize_pytgcalls(chat_id: int):
     """Initialize pytgcalls for a specific chat."""
     global telethon_client, pytgcalls_instances
     
-    if not API_ID or not API_HASH:
-        logger.error("API_ID and API_HASH required for pytgcalls")
-        return None
-    
     chat_id_str = str(chat_id)
     
+    # Return existing instance if available
     if chat_id_str in pytgcalls_instances:
-        return pytgcalls_instances[chat_id_str]
+        pytg_client = pytgcalls_instances[chat_id_str]
+        # Check if instance is still active
+        try:
+            if pytg_client:
+                return pytg_client
+        except:
+            pass
     
     try:
-        # Initialize Telethon client if not exists
-        if telethon_client is None:
-            logger.info("Initializing Telethon client...")
-            telethon_client = TelegramClient(
-                'bot_session',
-                int(API_ID),
-                API_HASH
-            )
-            await telethon_client.start(bot_token=BOT_TOKEN)
-            logger.info("Telethon client started")
+        # Ensure Telethon client is initialized
+        client = await initialize_telethon_client()
+        if not client:
+            logger.error("Cannot initialize pytgcalls: Telethon client failed")
+            return None
         
         # Create pytgcalls instance
         logger.info(f"Creating pytgcalls instance for chat {chat_id}")
-        pytg_client = PyTgCalls(telethon_client)
+        pytg_client = PyTgCalls(client)
         await pytg_client.start()
         
         pytgcalls_instances[chat_id_str] = pytg_client
-        logger.info(f"pytgcalls instance created for chat {chat_id}")
+        logger.info(f"✅ pytgcalls instance created for chat {chat_id}")
         
         return pytg_client
     
@@ -548,9 +596,155 @@ async def initialize_pytgcalls(chat_id: int):
         logger.error(f"Failed to initialize pytgcalls for chat {chat_id}: {e}", exc_info=True)
         return None
 
+async def join_voice_chat(chat_id: int, auto_join: bool = False) -> bool:
+    """Join a voice chat in the specified chat."""
+    global active_calls
+    
+    chat_id_str = str(chat_id)
+    
+    try:
+        # Initialize pytgcalls for this chat
+        pytg_client = await initialize_pytgcalls(chat_id)
+        if not pytg_client:
+            logger.error(f"Cannot join call: pytgcalls initialization failed for chat {chat_id}")
+            return False
+        
+        # Check if already in call
+        if chat_id_str in active_calls and active_calls[chat_id_str].get("state") == "joined":
+            logger.info(f"Already in voice chat for chat {chat_id}")
+            return True
+        
+        # Initialize call state
+        if chat_id_str not in active_calls:
+            active_calls[chat_id_str] = {
+                "state": "idle",
+                "participants": [],
+                "transcript": deque(maxlen=20),
+                "last_response_time": None,
+                "error_count": 0,
+                "join_time": None,
+                "auto_joined": auto_join
+            }
+        
+        # Join the call with a silent audio stream (ready to play audio)
+        logger.info(f"Joining voice chat in chat {chat_id}...")
+        
+        # Create a silent audio file for initial connection
+        with tempfile.NamedTemporaryFile(suffix=".raw", delete=False) as temp_file:
+            # Generate 1 second of silence (48kHz stereo 16-bit PCM)
+            silence = b'\x00' * (48000 * 2 * 2)  # sample_rate * channels * bytes_per_sample
+            temp_file.write(silence)
+            silent_audio_path = temp_file.name
+        
+        try:
+            await pytg_client.join_group_call(
+                chat_id,
+                AudioPiped(silent_audio_path),
+                stream_type=StreamType().pulse_stream
+            )
+            
+            # Update call state
+            active_calls[chat_id_str]["state"] = "joined"
+            active_calls[chat_id_str]["join_time"] = datetime.now()
+            active_calls[chat_id_str]["error_count"] = 0
+            
+            logger.info(f"✅ Successfully joined voice chat in chat {chat_id}")
+            
+            # Initialize audio buffer and TTS queue
+            if chat_id_str not in audio_buffers:
+                audio_buffers[chat_id_str] = deque(maxlen=100)
+            if chat_id_str not in tts_queues:
+                tts_queues[chat_id_str] = asyncio.Queue()
+            
+            return True
+        
+        finally:
+            # Cleanup temporary file after a delay
+            await asyncio.sleep(2)
+            if os.path.exists(silent_audio_path):
+                os.unlink(silent_audio_path)
+    
+    except Exception as e:
+        logger.error(f"Failed to join voice chat in chat {chat_id}: {e}", exc_info=True)
+        
+        # Update error count
+        if chat_id_str in active_calls:
+            active_calls[chat_id_str]["error_count"] = active_calls[chat_id_str].get("error_count", 0) + 1
+        
+        return False
+
+async def leave_voice_chat(chat_id: int) -> bool:
+    """Leave a voice chat in the specified chat."""
+    global active_calls, pytgcalls_instances
+    
+    chat_id_str = str(chat_id)
+    
+    try:
+        pytg_client = pytgcalls_instances.get(chat_id_str)
+        
+        if not pytg_client:
+            logger.warning(f"No pytgcalls instance found for chat {chat_id}")
+            # Still clean up state
+            if chat_id_str in active_calls:
+                active_calls[chat_id_str]["state"] = "left"
+            return True
+        
+        logger.info(f"Leaving voice chat in chat {chat_id}...")
+        
+        # Leave the group call
+        await pytg_client.leave_group_call(chat_id)
+        
+        # Update call state
+        if chat_id_str in active_calls:
+            active_calls[chat_id_str]["state"] = "left"
+            active_calls[chat_id_str]["transcript"].clear()
+        
+        # Clean up buffers
+        if chat_id_str in audio_buffers:
+            audio_buffers[chat_id_str].clear()
+        if chat_id_str in tts_queues:
+            # Clear the queue
+            while not tts_queues[chat_id_str].empty():
+                try:
+                    tts_queues[chat_id_str].get_nowait()
+                except:
+                    break
+        
+        logger.info(f"✅ Successfully left voice chat in chat {chat_id}")
+        return True
+    
+    except Exception as e:
+        logger.error(f"Error leaving voice chat in chat {chat_id}: {e}", exc_info=True)
+        # Still try to clean up state
+        if chat_id_str in active_calls:
+            active_calls[chat_id_str]["state"] = "left"
+        return False
+
+async def get_call_state(chat_id: int) -> dict:
+    """Get the current call state for a chat."""
+    chat_id_str = str(chat_id)
+    return active_calls.get(chat_id_str, {
+        "state": "idle",
+        "participants": [],
+        "transcript": deque(),
+        "last_response_time": None,
+        "error_count": 0
+    })
+
+async def is_in_call(chat_id: int) -> bool:
+    """Check if the bot is currently in a voice chat."""
+    chat_id_str = str(chat_id)
+    call_state = active_calls.get(chat_id_str, {})
+    return call_state.get("state") == "joined"
+
 async def stream_tts_to_call(chat_id: int, text: str, voice: str = None, rate: str = None):
     """Stream TTS audio to a voice call using pytgcalls."""
     try:
+        # Check if in call first
+        if not await is_in_call(chat_id):
+            logger.warning(f"Cannot stream TTS: not in voice chat for chat {chat_id}")
+            return False
+        
         pytg_client = await initialize_pytgcalls(chat_id)
         if not pytg_client:
             logger.error(f"Cannot stream TTS: pytgcalls not initialized for chat {chat_id}")
@@ -562,31 +756,133 @@ async def stream_tts_to_call(chat_id: int, text: str, voice: str = None, rate: s
             logger.error("Failed to generate TTS audio")
             return False
         
-        # Save to temporary file for streaming
-        with tempfile.NamedTemporaryFile(suffix=".raw", delete=False) as temp_file:
-            temp_file.write(audio_data)
-            temp_path = temp_file.name
+        # Convert audio to proper format for streaming (PCM 48kHz stereo)
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as input_file:
+            input_file.write(audio_data)
+            input_path = input_file.name
+        
+        with tempfile.NamedTemporaryFile(suffix=".raw", delete=False) as output_file:
+            output_path = output_file.name
         
         try:
-            # Stream audio to call
-            await pytg_client.join_group_call(
-                chat_id,
-                AudioPiped(temp_path),
-                stream_type=StreamType().pulse_stream
+            # Convert to raw PCM for streaming
+            success = await convert_audio_format(
+                input_path, 
+                output_path, 
+                format="s16le",  # 16-bit PCM
+                sample_rate=48000,
+                channels=2
             )
             
-            logger.info(f"TTS audio streamed to call in chat {chat_id}")
+            if not success:
+                logger.error("Failed to convert audio for streaming")
+                return False
+            
+            # Change stream to the new audio
+            await pytg_client.change_stream(
+                chat_id,
+                AudioPiped(output_path)
+            )
+            
+            logger.info(f"✅ TTS audio streamed to call in chat {chat_id}")
             return True
         
         finally:
-            # Cleanup will happen after streaming completes
-            await asyncio.sleep(2)  # Give time for streaming to start
-            if os.path.exists(temp_path):
-                os.unlink(temp_path)
+            # Cleanup temporary files after streaming
+            await asyncio.sleep(3)  # Give time for streaming to complete
+            for path in [input_path, output_path]:
+                if os.path.exists(path):
+                    try:
+                        os.unlink(path)
+                    except:
+                        pass
     
     except Exception as e:
         logger.error(f"Failed to stream TTS to call: {e}", exc_info=True)
         return False
+
+async def play_audio_to_call(chat_id: int, audio_path: str) -> bool:
+    """Play an audio file to a voice call."""
+    try:
+        if not await is_in_call(chat_id):
+            logger.warning(f"Cannot play audio: not in voice chat for chat {chat_id}")
+            return False
+        
+        pytg_client = await initialize_pytgcalls(chat_id)
+        if not pytg_client:
+            logger.error(f"Cannot play audio: pytgcalls not initialized for chat {chat_id}")
+            return False
+        
+        # Convert audio to proper format
+        with tempfile.NamedTemporaryFile(suffix=".raw", delete=False) as temp_file:
+            output_path = temp_file.name
+        
+        try:
+            success = await convert_audio_format(
+                audio_path,
+                output_path,
+                format="s16le",
+                sample_rate=48000,
+                channels=2
+            )
+            
+            if not success:
+                return False
+            
+            # Change stream to play the audio
+            await pytg_client.change_stream(
+                chat_id,
+                AudioPiped(output_path)
+            )
+            
+            logger.info(f"✅ Audio file played to call in chat {chat_id}")
+            return True
+        
+        finally:
+            # Cleanup
+            await asyncio.sleep(3)
+            if os.path.exists(output_path):
+                try:
+                    os.unlink(output_path)
+                except:
+                    pass
+    
+    except Exception as e:
+        logger.error(f"Failed to play audio to call: {e}", exc_info=True)
+        return False
+
+async def capture_call_audio(chat_id: int, duration: int = 5) -> Optional[bytes]:
+    """Capture audio frames from a voice call for STT processing."""
+    try:
+        chat_id_str = str(chat_id)
+        
+        if not await is_in_call(chat_id):
+            logger.warning(f"Cannot capture audio: not in voice chat for chat {chat_id}")
+            return None
+        
+        # Get audio buffer for this chat
+        if chat_id_str not in audio_buffers:
+            audio_buffers[chat_id_str] = deque(maxlen=100)
+        
+        audio_buffer = audio_buffers[chat_id_str]
+        
+        # Wait to collect audio frames
+        await asyncio.sleep(duration)
+        
+        # Combine captured frames
+        if len(audio_buffer) == 0:
+            logger.debug(f"No audio captured from call in chat {chat_id}")
+            return None
+        
+        # Convert frames to bytes
+        audio_data = b''.join(audio_buffer)
+        audio_buffer.clear()
+        
+        return audio_data
+    
+    except Exception as e:
+        logger.error(f"Failed to capture call audio: {e}", exc_info=True)
+        return None
 
 def create_telegraph_page(title: str, content: str, config: dict) -> str | None:
     try:
@@ -2659,6 +2955,106 @@ async def configure_call_settings(update: Update, context: ContextTypes.DEFAULT_
         logger.error(f"Error configuring call settings: {e}")
         await update.message.reply_text("Error updating call configuration.")
 
+async def joincall_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Manually join a voice chat."""
+    if not update.message: return
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+        await update.message.reply_text("Only admins can control call participation.")
+        return
+    
+    chat_id_int = update.message.chat_id
+    
+    # Check if API credentials are configured
+    if not API_ID or not API_HASH:
+        await update.message.reply_text(
+            "❌ Call features not configured.\n"
+            "Please set API_ID and API_HASH environment variables."
+        )
+        return
+    
+    # Check if already in call
+    if await is_in_call(chat_id_int):
+        await update.message.reply_text("✅ Already in the voice chat.")
+        return
+    
+    status_msg = await update.message.reply_text("🔄 Joining voice chat...")
+    
+    try:
+        success = await join_voice_chat(chat_id_int, auto_join=False)
+        
+        if success:
+            await status_msg.edit_text("✅ Successfully joined the voice chat!")
+        else:
+            await status_msg.edit_text(
+                "❌ Failed to join voice chat.\n"
+                "Make sure a voice chat is active in this group."
+            )
+    
+    except Exception as e:
+        logger.error(f"Error in joincall command: {e}", exc_info=True)
+        await status_msg.edit_text("❌ Error joining voice chat.")
+
+async def leavecall_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Manually leave a voice chat."""
+    if not update.message: return
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+        await update.message.reply_text("Only admins can control call participation.")
+        return
+    
+    chat_id_int = update.message.chat_id
+    
+    # Check if in call
+    if not await is_in_call(chat_id_int):
+        await update.message.reply_text("Not currently in a voice chat.")
+        return
+    
+    status_msg = await update.message.reply_text("🔄 Leaving voice chat...")
+    
+    try:
+        success = await leave_voice_chat(chat_id_int)
+        
+        if success:
+            await status_msg.edit_text("✅ Successfully left the voice chat.")
+        else:
+            await status_msg.edit_text("⚠️ Attempted to leave voice chat (may have already left).")
+    
+    except Exception as e:
+        logger.error(f"Error in leavecall command: {e}", exc_info=True)
+        await status_msg.edit_text("❌ Error leaving voice chat.")
+
+async def callinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show detailed call state information."""
+    if not update.message: return
+    
+    chat_id_int = update.message.chat_id
+    call_state = await get_call_state(chat_id_int)
+    
+    state = call_state.get("state", "idle")
+    error_count = call_state.get("error_count", 0)
+    transcript_count = len(call_state.get("transcript", []))
+    join_time = call_state.get("join_time")
+    
+    # Check pytgcalls instance
+    chat_id_str = str(chat_id_int)
+    has_instance = chat_id_str in pytgcalls_instances
+    
+    status_text = "🎙️ **Call Framework Status**\n\n"
+    status_text += f"**State:** {state}\n"
+    status_text += f"**In Call:** {'✅ Yes' if await is_in_call(chat_id_int) else '❌ No'}\n"
+    status_text += f"**pytgcalls Instance:** {'✅ Active' if has_instance else '❌ Not initialized'}\n"
+    status_text += f"**Transcript Buffer:** {transcript_count} messages\n"
+    status_text += f"**Error Count:** {error_count}\n"
+    
+    if join_time:
+        duration = datetime.now() - join_time
+        minutes = int(duration.total_seconds() / 60)
+        status_text += f"**Call Duration:** {minutes} minutes\n"
+    
+    # Check Telethon status
+    status_text += f"\n**Telethon Client:** {'✅ Connected' if telethon_client else '❌ Not initialized'}\n"
+    
+    await update.message.reply_text(status_text, parse_mode='Markdown')
+
 # --- TTS/STT Configuration Commands ---
 
 async def ttson(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2875,6 +3271,54 @@ async def sttstatus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         parse_mode='Markdown'
     )
 
+# --- Application Lifecycle Hooks ---
+
+async def post_init(application: Application) -> None:
+    """Initialize services after application startup."""
+    try:
+        logger.info("🚀 Initializing call framework...")
+        
+        # Initialize Whisper model if configured
+        if WHISPER_MODEL_SIZE:
+            logger.info("Loading Whisper model for STT...")
+            asyncio.create_task(initialize_whisper_model())
+        
+        # Initialize Telethon client if API credentials are available
+        if API_ID and API_HASH:
+            logger.info("Initializing Telethon client for pytgcalls...")
+            client = await initialize_telethon_client()
+            if client:
+                logger.info("✅ Telethon client ready")
+            else:
+                logger.warning("⚠️ Telethon client initialization failed - call features disabled")
+        else:
+            logger.warning("⚠️ API_ID and API_HASH not set - call features disabled")
+        
+        logger.info("✅ Call framework initialization complete")
+    
+    except Exception as e:
+        logger.error(f"Error during post_init: {e}", exc_info=True)
+
+async def post_shutdown(application: Application) -> None:
+    """Clean up resources on shutdown."""
+    try:
+        logger.info("🛑 Shutting down call framework...")
+        
+        # Leave all active calls
+        for chat_id in list(active_calls.keys()):
+            try:
+                await leave_voice_chat(int(chat_id))
+            except Exception as e:
+                logger.error(f"Error leaving call in chat {chat_id}: {e}")
+        
+        # Shutdown Telethon client
+        await shutdown_telethon_client()
+        
+        logger.info("✅ Call framework shutdown complete")
+    
+    except Exception as e:
+        logger.error(f"Error during post_shutdown: {e}", exc_info=True)
+
 # --- Main Function ---
 def main() -> None:
     # Ensure necessary directories/files exist (optional, helps first run)
@@ -2882,7 +3326,7 @@ def main() -> None:
     if not os.path.exists(MEMORY_FILE): save_memory({})
     if not os.path.exists(GOSSIP_FILE): save_gossip({})
 
-    application = Application.builder().token(BOT_TOKEN).build()
+    application = Application.builder().token(BOT_TOKEN).post_init(post_init).post_shutdown(post_shutdown).build()
     
 # Load config for reminder time
     config = load_config()
@@ -2954,6 +3398,11 @@ def main() -> None:
         CommandHandler("callstatus", check_proactive_calls_status),
         CommandHandler("callquiet", set_call_quiet_hours),
         CommandHandler("callconfig", configure_call_settings),
+        
+        # Call Control Commands (Admin)
+        CommandHandler("joincall", joincall_command),
+        CommandHandler("leavecall", leavecall_command),
+        CommandHandler("callinfo", callinfo_command),
 
         # TTS/STT Commands (Admin)
         CommandHandler("ttson", ttson),
