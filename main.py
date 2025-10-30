@@ -3534,161 +3534,278 @@ async def async_main():
     # ========== REGISTER EVENT HANDLERS ==========
     
     # Command Handlers
-    @client.on(events.NewMessage(pattern='/start'))
-    async def cmd_start(event): await help_command(event)
+    @client.on(events.NewMessage(pattern=r'^/start', incoming=True))
+    async def cmd_start(event): 
+        try:
+            logger.info(f"🔔 /start command triggered by {event.sender_id}")
+            await help_command(event)
+        except Exception as e:
+            logger.error(f"Error in /start handler: {e}", exc_info=True)
     
-    @client.on(events.NewMessage(pattern='/help'))
-    async def cmd_help(event): await help_command(event)
+    @client.on(events.NewMessage(pattern=r'^/help', incoming=True))
+    async def cmd_help(event): 
+        try:
+            logger.info(f"🔔 /help command triggered by {event.sender_id}")
+            await help_command(event)
+        except Exception as e:
+            logger.error(f"Error in /help handler: {e}", exc_info=True)
     
-    @client.on(events.NewMessage(pattern='/ai'))
-    async def cmd_ai(event): await smart_ai_handler(event)
+    @client.on(events.NewMessage(pattern=r'^/ai', incoming=True))
+    async def cmd_ai(event): 
+        try:
+            logger.info(f"🔔 /ai command triggered by {event.sender_id}")
+            await smart_ai_handler(event)
+        except Exception as e:
+            logger.error(f"Error in /ai handler: {e}", exc_info=True)
     
-    @client.on(events.NewMessage(pattern='/react'))
-    async def cmd_react(event): await force_react_command(event)
+    @client.on(events.NewMessage(pattern=r'^/react', incoming=True))
+    async def cmd_react(event): 
+        logger.info(f"🔔 /react command triggered by {event.sender_id}")
+        await force_react_command(event)
     
-    @client.on(events.NewMessage(pattern='/audio'))
-    async def cmd_audio(event): await toggle_audio_mode_handler(event)
+    @client.on(events.NewMessage(pattern=r'^/audio', incoming=True))
+    async def cmd_audio(event): 
+        logger.info(f"🔔 /audio command triggered by {event.sender_id}")
+        await toggle_audio_mode_handler(event)
     
-    @client.on(events.NewMessage(pattern='/chem'))
-    async def cmd_chem(event): await chem_handler(event)
+    @client.on(events.NewMessage(pattern=r'^/chem', incoming=True))
+    async def cmd_chem(event): 
+        logger.info(f"🔔 /chem command triggered by {event.sender_id}")
+        await chem_handler(event)
     
-    @client.on(events.NewMessage(pattern='/tex'))
-    async def cmd_tex(event): await latex_handler(event)
+    @client.on(events.NewMessage(pattern=r'^/tex', incoming=True))
+    async def cmd_tex(event): 
+        logger.info(f"🔔 /tex command triggered by {event.sender_id}")
+        await latex_handler(event)
     
-    @client.on(events.NewMessage(pattern='/chatid'))
-    async def cmd_chatid(event): await get_chat_id(event)
+    @client.on(events.NewMessage(pattern=r'^/chatid', incoming=True))
+    async def cmd_chatid(event): 
+        logger.info(f"🔔 /chatid command triggered by {event.sender_id}")
+        await get_chat_id(event)
     
-    @client.on(events.NewMessage(pattern='/summarize'))
-    async def cmd_summarize(event): await summarize_command(event)
+    @client.on(events.NewMessage(pattern=r'^/summarize', incoming=True))
+    async def cmd_summarize(event): 
+        logger.info(f"🔔 /summarize command triggered by {event.sender_id}")
+        await summarize_command(event)
     
-    @client.on(events.NewMessage(pattern='/studypoll'))
-    async def cmd_studypoll(event): await studypoll_command(event)
+    @client.on(events.NewMessage(pattern=r'^/studypoll', incoming=True))
+    async def cmd_studypoll(event): 
+        logger.info(f"🔔 /studypoll command triggered by {event.sender_id}")
+        await studypoll_command(event)
     
-    @client.on(events.NewMessage(pattern='/remember'))
-    async def cmd_remember(event): await remember_command(event)
+    @client.on(events.NewMessage(pattern=r'^/remember', incoming=True))
+    async def cmd_remember(event): 
+        logger.info(f"🔔 /remember command triggered by {event.sender_id}")
+        await remember_command(event)
     
-    @client.on(events.NewMessage(pattern='/recall'))
-    async def cmd_recall(event): await recall_command(event)
+    @client.on(events.NewMessage(pattern=r'^/recall', incoming=True))
+    async def cmd_recall(event): 
+        logger.info(f"🔔 /recall command triggered by {event.sender_id}")
+        await recall_command(event)
     
-    @client.on(events.NewMessage(pattern='/forget'))
-    async def cmd_forget(event): await forget_command(event)
+    @client.on(events.NewMessage(pattern=r'^/forget', incoming=True))
+    async def cmd_forget(event): 
+        logger.info(f"🔔 /forget command triggered by {event.sender_id}")
+        await forget_command(event)
     
-    @client.on(events.NewMessage(pattern='/nanoedit'))
-    async def cmd_nanoedit(event): await nanoedit_handler(event)
+    @client.on(events.NewMessage(pattern=r'^/nanoedit', incoming=True))
+    async def cmd_nanoedit(event): 
+        logger.info(f"🔔 /nanoedit command triggered by {event.sender_id}")
+        await nanoedit_handler(event)
     
-    @client.on(events.NewMessage(pattern='/askit'))
-    async def cmd_askit(event): await askit_handler(event)
+    @client.on(events.NewMessage(pattern=r'^/askit', incoming=True))
+    async def cmd_askit(event): 
+        logger.info(f"🔔 /askit command triggered by {event.sender_id}")
+        await askit_handler(event)
     
-    @client.on(events.NewMessage(pattern='/videoedit'))
-    async def cmd_videoedit(event): await videoedit_handler(event)
+    @client.on(events.NewMessage(pattern=r'^/videoedit', incoming=True))
+    async def cmd_videoedit(event): 
+        logger.info(f"🔔 /videoedit command triggered by {event.sender_id}")
+        await videoedit_handler(event)
     
-    @client.on(events.NewMessage(pattern='/boton'))
-    async def cmd_boton(event): await turn_ai_on(event)
+    @client.on(events.NewMessage(pattern=r'^/boton', incoming=True))
+    async def cmd_boton(event): 
+        try:
+            logger.info(f"🔔 /boton command triggered by {event.sender_id}")
+            await turn_ai_on(event)
+        except Exception as e:
+            logger.error(f"Error in /boton handler: {e}", exc_info=True)
     
-    @client.on(events.NewMessage(pattern='/botoff'))
-    async def cmd_botoff(event): await turn_ai_off(event)
+    @client.on(events.NewMessage(pattern=r'^/botoff', incoming=True))
+    async def cmd_botoff(event): 
+        try:
+            logger.info(f"🔔 /botoff command triggered by {event.sender_id}")
+            await turn_ai_off(event)
+        except Exception as e:
+            logger.error(f"Error in /botoff handler: {e}", exc_info=True)
     
-    @client.on(events.NewMessage(pattern='/aistatus'))
-    async def cmd_aistatus(event): await check_ai_status(event)
+    @client.on(events.NewMessage(pattern=r'^/aistatus', incoming=True))
+    async def cmd_aistatus(event): 
+        try:
+            logger.info(f"🔔 /aistatus command triggered by {event.sender_id}")
+            await check_ai_status(event)
+        except Exception as e:
+            logger.error(f"Error in /aistatus handler: {e}", exc_info=True)
     
-    @client.on(events.NewMessage(pattern='/randomon'))
-    async def cmd_randomon(event): await turn_random_chat_on(event)
+    @client.on(events.NewMessage(pattern=r'^/randomon', incoming=True))
+    async def cmd_randomon(event): 
+        logger.info(f"🔔 /randomon command triggered by {event.sender_id}")
+        await turn_random_chat_on(event)
     
-    @client.on(events.NewMessage(pattern='/randomoff'))
-    async def cmd_randomoff(event): await turn_random_chat_off(event)
+    @client.on(events.NewMessage(pattern=r'^/randomoff', incoming=True))
+    async def cmd_randomoff(event): 
+        logger.info(f"🔔 /randomoff command triggered by {event.sender_id}")
+        await turn_random_chat_off(event)
     
-    @client.on(events.NewMessage(pattern='/randomstatus'))
-    async def cmd_randomstatus(event): await check_random_status(event)
+    @client.on(events.NewMessage(pattern=r'^/randomstatus', incoming=True))
+    async def cmd_randomstatus(event): 
+        logger.info(f"🔔 /randomstatus command triggered by {event.sender_id}")
+        await check_random_status(event)
     
-    @client.on(events.NewMessage(pattern='/testrandom'))
-    async def cmd_testrandom(event): await test_random_handler(event)
+    @client.on(events.NewMessage(pattern=r'^/testrandom', incoming=True))
+    async def cmd_testrandom(event): 
+        logger.info(f"🔔 /testrandom command triggered by {event.sender_id}")
+        await test_random_handler(event)
     
-    @client.on(events.NewMessage(pattern='/on'))
-    async def cmd_modon(event): await turn_moderation_on(event)
+    @client.on(events.NewMessage(pattern=r'^/on', incoming=True))
+    async def cmd_modon(event): 
+        logger.info(f"🔔 /on command triggered by {event.sender_id}")
+        await turn_moderation_on(event)
     
-    @client.on(events.NewMessage(pattern='/off'))
-    async def cmd_modoff(event): await turn_moderation_off(event)
+    @client.on(events.NewMessage(pattern=r'^/off', incoming=True))
+    async def cmd_modoff(event): 
+        logger.info(f"🔔 /off command triggered by {event.sender_id}")
+        await turn_moderation_off(event)
     
-    @client.on(events.NewMessage(pattern='/time'))
-    async def cmd_time(event): await set_reminder_time_handler(event)
+    @client.on(events.NewMessage(pattern=r'^/time', incoming=True))
+    async def cmd_time(event): 
+        logger.info(f"🔔 /time command triggered by {event.sender_id}")
+        await set_reminder_time_handler(event)
     
-    @client.on(events.NewMessage(pattern='/callon'))
-    async def cmd_callon(event): await turn_proactive_calls_on(event)
+    @client.on(events.NewMessage(pattern=r'^/callon', incoming=True))
+    async def cmd_callon(event): 
+        logger.info(f"🔔 /callon command triggered by {event.sender_id}")
+        await turn_proactive_calls_on(event)
     
-    @client.on(events.NewMessage(pattern='/calloff'))
-    async def cmd_calloff(event): await turn_proactive_calls_off(event)
+    @client.on(events.NewMessage(pattern=r'^/calloff', incoming=True))
+    async def cmd_calloff(event): 
+        logger.info(f"🔔 /calloff command triggered by {event.sender_id}")
+        await turn_proactive_calls_off(event)
     
-    @client.on(events.NewMessage(pattern='/callstatus'))
-    async def cmd_callstatus(event): await check_proactive_calls_status(event)
+    @client.on(events.NewMessage(pattern=r'^/callstatus', incoming=True))
+    async def cmd_callstatus(event): 
+        logger.info(f"🔔 /callstatus command triggered by {event.sender_id}")
+        await check_proactive_calls_status(event)
     
-    @client.on(events.NewMessage(pattern='/callquiet'))
-    async def cmd_callquiet(event): await set_call_quiet_hours(event)
+    @client.on(events.NewMessage(pattern=r'^/callquiet', incoming=True))
+    async def cmd_callquiet(event): 
+        logger.info(f"🔔 /callquiet command triggered by {event.sender_id}")
+        await set_call_quiet_hours(event)
     
-    @client.on(events.NewMessage(pattern='/callconfig'))
-    async def cmd_callconfig(event): await configure_call_settings(event)
+    @client.on(events.NewMessage(pattern=r'^/callconfig', incoming=True))
+    async def cmd_callconfig(event): 
+        logger.info(f"🔔 /callconfig command triggered by {event.sender_id}")
+        await configure_call_settings(event)
     
-    @client.on(events.NewMessage(pattern='/joincall'))
-    async def cmd_joincall(event): await joincall_command(event)
+    @client.on(events.NewMessage(pattern=r'^/joincall', incoming=True))
+    async def cmd_joincall(event): 
+        logger.info(f"🔔 /joincall command triggered by {event.sender_id}")
+        await joincall_command(event)
     
-    @client.on(events.NewMessage(pattern='/leavecall'))
-    async def cmd_leavecall(event): await leavecall_command(event)
+    @client.on(events.NewMessage(pattern=r'^/leavecall', incoming=True))
+    async def cmd_leavecall(event): 
+        logger.info(f"🔔 /leavecall command triggered by {event.sender_id}")
+        await leavecall_command(event)
     
-    @client.on(events.NewMessage(pattern='/callinfo'))
-    async def cmd_callinfo(event): await callinfo_command(event)
+    @client.on(events.NewMessage(pattern=r'^/callinfo', incoming=True))
+    async def cmd_callinfo(event): 
+        logger.info(f"🔔 /callinfo command triggered by {event.sender_id}")
+        await callinfo_command(event)
     
-    @client.on(events.NewMessage(pattern='/ttson'))
-    async def cmd_ttson(event): await ttson(event)
+    @client.on(events.NewMessage(pattern=r'^/ttson', incoming=True))
+    async def cmd_ttson(event): 
+        logger.info(f"🔔 /ttson command triggered by {event.sender_id}")
+        await ttson(event)
     
-    @client.on(events.NewMessage(pattern='/ttsoff'))
-    async def cmd_ttsoff(event): await ttsoff(event)
+    @client.on(events.NewMessage(pattern=r'^/ttsoff', incoming=True))
+    async def cmd_ttsoff(event): 
+        logger.info(f"🔔 /ttsoff command triggered by {event.sender_id}")
+        await ttsoff(event)
     
-    @client.on(events.NewMessage(pattern='/ttsconfig'))
-    async def cmd_ttsconfig(event): await ttsconfig(event)
+    @client.on(events.NewMessage(pattern=r'^/ttsconfig', incoming=True))
+    async def cmd_ttsconfig(event): 
+        logger.info(f"🔔 /ttsconfig command triggered by {event.sender_id}")
+        await ttsconfig(event)
     
-    @client.on(events.NewMessage(pattern='/ttsstatus'))
-    async def cmd_ttsstatus(event): await ttsstatus(event)
+    @client.on(events.NewMessage(pattern=r'^/ttsstatus', incoming=True))
+    async def cmd_ttsstatus(event): 
+        logger.info(f"🔔 /ttsstatus command triggered by {event.sender_id}")
+        await ttsstatus(event)
     
-    @client.on(events.NewMessage(pattern='/stton'))
-    async def cmd_stton(event): await stton(event)
+    @client.on(events.NewMessage(pattern=r'^/stton', incoming=True))
+    async def cmd_stton(event): 
+        logger.info(f"🔔 /stton command triggered by {event.sender_id}")
+        await stton(event)
     
-    @client.on(events.NewMessage(pattern='/sttoff'))
-    async def cmd_sttoff(event): await sttoff(event)
+    @client.on(events.NewMessage(pattern=r'^/sttoff', incoming=True))
+    async def cmd_sttoff(event): 
+        logger.info(f"🔔 /sttoff command triggered by {event.sender_id}")
+        await sttoff(event)
     
-    @client.on(events.NewMessage(pattern='/sttconfig'))
-    async def cmd_sttconfig(event): await sttconfig(event)
+    @client.on(events.NewMessage(pattern=r'^/sttconfig', incoming=True))
+    async def cmd_sttconfig(event): 
+        logger.info(f"🔔 /sttconfig command triggered by {event.sender_id}")
+        await sttconfig(event)
     
-    @client.on(events.NewMessage(pattern='/sttstatus'))
-    async def cmd_sttstatus(event): await sttstatus(event)
+    @client.on(events.NewMessage(pattern=r'^/sttstatus', incoming=True))
+    async def cmd_sttstatus(event): 
+        logger.info(f"🔔 /sttstatus command triggered by {event.sender_id}")
+        await sttstatus(event)
     
-    @client.on(events.NewMessage(pattern='/ban'))
-    async def cmd_ban(event): await ban_user(event)
+    @client.on(events.NewMessage(pattern=r'^/ban', incoming=True))
+    async def cmd_ban(event): 
+        logger.info(f"🔔 /ban command triggered by {event.sender_id}")
+        await ban_user(event)
     
-    @client.on(events.NewMessage(pattern='/mute'))
-    async def cmd_mute(event): await mute_user(event)
+    @client.on(events.NewMessage(pattern=r'^/mute', incoming=True))
+    async def cmd_mute(event): 
+        logger.info(f"🔔 /mute command triggered by {event.sender_id}")
+        await mute_user(event)
     
-    @client.on(events.NewMessage(pattern='/unmute'))
-    async def cmd_unmute(event): await unmute_user(event)
+    @client.on(events.NewMessage(pattern=r'^/unmute', incoming=True))
+    async def cmd_unmute(event): 
+        logger.info(f"🔔 /unmute command triggered by {event.sender_id}")
+        await unmute_user(event)
     
-    @client.on(events.NewMessage(pattern='/delete'))
-    async def cmd_delete(event): await delete_message(event)
+    @client.on(events.NewMessage(pattern=r'^/delete', incoming=True))
+    async def cmd_delete(event): 
+        logger.info(f"🔔 /delete command triggered by {event.sender_id}")
+        await delete_message(event)
     
-    @client.on(events.NewMessage(pattern='/lock'))
-    async def cmd_lock(event): await lock_chat(event)
+    @client.on(events.NewMessage(pattern=r'^/lock', incoming=True))
+    async def cmd_lock(event): 
+        logger.info(f"🔔 /lock command triggered by {event.sender_id}")
+        await lock_chat(event)
     
-    @client.on(events.NewMessage(pattern='/unlock'))
-    async def cmd_unlock(event): await unlock_chat(event)
+    @client.on(events.NewMessage(pattern=r'^/unlock', incoming=True))
+    async def cmd_unlock(event): 
+        logger.info(f"🔔 /unlock command triggered by {event.sender_id}")
+        await unlock_chat(event)
     
-    @client.on(events.NewMessage(pattern='/ai1|/ai618'))
-    async def cmd_simple_ai(event): await simple_ai_handler(event)
+    @client.on(events.NewMessage(pattern=r'^/ai1|^/ai618', incoming=True))
+    async def cmd_simple_ai(event): 
+        logger.info(f"🔔 /ai1 or /ai618 command triggered by {event.sender_id}")
+        await simple_ai_handler(event)
     
     # Voice message handler
-    @client.on(events.NewMessage())
+    @client.on(events.NewMessage(incoming=True))
     async def voice_handler(event):
         if event.voice:
+            logger.info(f"🎤 Voice message received from {event.sender_id}")
             await handle_call_audio(event)
     
     # Master text handler for all non-command text
-    @client.on(events.NewMessage())
+    @client.on(events.NewMessage(incoming=True))
     async def text_handler(event):
         if event.text and not event.text.startswith('/'):
             await master_text_handler(event)
