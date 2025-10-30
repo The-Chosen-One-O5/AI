@@ -98,6 +98,7 @@ else:
 chat_histories = {}
 active_random_jobs = set()
 trivia_sessions = {}
+active_calls = {}  # {chat_id: {"state": "active/idle", "participants": [], "transcript": deque(), "last_response_time": datetime, "error_count": 0}}
 
 # --- Daily Reminder Configuration ---
 JEE_MAINS_DATE = datetime(2026, 1, 22).date()
@@ -122,7 +123,8 @@ def load_config() -> dict:
         return {
             "reminder_time": "04:00", "moderation_enabled": True,
             "random_chat_config": {}, "ai_enabled_config": {},
-            "audio_mode_config": {}
+            "audio_mode_config": {}, "proactive_call_config": {},
+            "call_quiet_hours": {}  # {chat_id: {"start": "22:00", "end": "08:00"}}
         }
 
 def save_config(config: dict) -> None:
@@ -723,6 +725,219 @@ async def get_emoji_reaction(message_text: str) -> str | None:
     logger.warning(f"AI did not return a valid emoji from response: '{response}'")
     return None
 
+# --- Proactive Call Management ---
+
+async def transcribe_audio(audio_bytes: bytes) -> str | None:
+    """Transcribe audio using Groq's Whisper API (free and fast)."""
+    if not GROQ_API_KEY:
+        logger.warning("Groq API key not set, cannot transcribe audio.")
+        return None
+    
+    try:
+        # Save audio bytes to temporary file for Groq API
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_audio:
+            temp_audio.write(audio_bytes)
+            temp_audio_path = temp_audio.name
+        
+        try:
+            # Use Groq's Whisper model for transcription
+            client = AsyncGroq(api_key=GROQ_API_KEY)
+            
+            with open(temp_audio_path, "rb") as audio_file:
+                # Groq supports Whisper model for transcription
+                transcription = await client.audio.transcriptions.create(
+                    file=audio_file,
+                    model="whisper-large-v3",
+                    response_format="text",
+                    language="en"  # Can be made configurable
+                )
+            
+            if transcription:
+                logger.info(f"Transcribed audio: {transcription[:100]}...")
+                return transcription.strip()
+            else:
+                logger.warning("Groq Whisper returned empty transcription.")
+                return None
+        finally:
+            # Clean up temporary file
+            import os
+            if os.path.exists(temp_audio_path):
+                os.unlink(temp_audio_path)
+    
+    except Exception as e:
+        logger.error(f"Audio transcription failed: {e}", exc_info=True)
+        return None
+
+def is_in_quiet_hours(chat_id: str) -> bool:
+    """Check if current time is within configured quiet hours for a chat."""
+    config = load_config()
+    quiet_hours = config.get("call_quiet_hours", {}).get(chat_id)
+    
+    if not quiet_hours:
+        return False
+    
+    try:
+        ist = pytz.timezone('Asia/Kolkata')
+        current_time = datetime.now(ist).time()
+        
+        start_str = quiet_hours.get("start", "22:00")
+        end_str = quiet_hours.get("end", "08:00")
+        
+        start_time = datetime.strptime(start_str, "%H:%M").time()
+        end_time = datetime.strptime(end_str, "%H:%M").time()
+        
+        # Handle overnight quiet hours (e.g., 22:00 to 08:00)
+        if start_time <= end_time:
+            return start_time <= current_time <= end_time
+        else:
+            return current_time >= start_time or current_time <= end_time
+    
+    except Exception as e:
+        logger.error(f"Error checking quiet hours: {e}")
+        return False
+
+def should_auto_join_call(chat_id: str, participant_count: int = 0) -> bool:
+    """Determine if bot should auto-join a call based on configuration."""
+    config = load_config()
+    call_config = config.get("proactive_call_config", {}).get(chat_id, {})
+    
+    # Check if proactive calls are enabled
+    if not call_config.get("enabled", False):
+        return False
+    
+    # Check quiet hours
+    if is_in_quiet_hours(chat_id):
+        logger.info(f"Skipping auto-join for chat {chat_id}: in quiet hours")
+        return False
+    
+    # Check minimum participant requirement
+    min_participants = call_config.get("min_participants", 2)
+    if participant_count < min_participants:
+        logger.info(f"Skipping auto-join for chat {chat_id}: only {participant_count} participants (need {min_participants})")
+        return False
+    
+    return True
+
+async def generate_call_response(chat_id: str, context: ContextTypes.DEFAULT_TYPE) -> str | None:
+    """Generate contextual AI response based on call transcript and chat history."""
+    call_state = active_calls.get(chat_id)
+    if not call_state:
+        return None
+    
+    # Check rate limiting
+    last_response = call_state.get("last_response_time")
+    if last_response:
+        time_since_last = (datetime.now() - last_response).total_seconds()
+        cooldown = 30  # Minimum 30 seconds between responses
+        if time_since_last < cooldown:
+            logger.info(f"Skipping response for chat {chat_id}: cooldown active ({time_since_last:.1f}s < {cooldown}s)")
+            return None
+    
+    # Merge transcript with recent chat history
+    transcript = "\n".join(call_state.get("transcript", deque()))
+    chat_history = "\n".join(chat_histories.get(int(chat_id), deque()))
+    
+    if not transcript and not chat_history:
+        return None
+    
+    combined_context = f"Recent chat:\n{chat_history}\n\nCall transcript:\n{transcript}"
+    
+    # Generate response
+    prompt = (
+        "You are AI618, participating in a group voice call. Based on the context below, "
+        "generate ONE brief, natural response (under 20 words). Be conversational and contextual. "
+        "If the conversation is unclear or no response is needed, say 'SKIP'.\n\n"
+        f"{combined_context}\n\n--- Your Response ---"
+    )
+    
+    messages = [{"role": "system", "content": prompt}]
+    response = await get_typegpt_response(messages)
+    
+    if response and "SKIP" not in response.upper():
+        # Update last response time
+        call_state["last_response_time"] = datetime.now()
+        call_state["error_count"] = 0  # Reset error count on success
+        return response
+    
+    return None
+
+async def handle_call_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle voice messages in active calls for transcription and response."""
+    if not update.message or not update.message.voice:
+        return
+    
+    chat_id = str(update.message.chat_id)
+    
+    # Check if this chat has proactive calls enabled
+    config = load_config()
+    if not config.get("proactive_call_config", {}).get(chat_id, {}).get("enabled", False):
+        return
+    
+    # Initialize call state if needed
+    if chat_id not in active_calls:
+        active_calls[chat_id] = {
+            "state": "active",
+            "participants": [],
+            "transcript": deque(maxlen=20),
+            "last_response_time": None,
+            "error_count": 0
+        }
+    
+    call_state = active_calls[chat_id]
+    
+    try:
+        # Download and transcribe audio
+        voice_file = await update.message.voice.get_file()
+        audio_bytes = await voice_file.download_as_bytearray()
+        
+        transcription = await transcribe_audio(bytes(audio_bytes))
+        
+        if transcription:
+            # Add to transcript
+            user_name = update.message.from_user.first_name
+            call_state["transcript"].append(f"{user_name}: {transcription}")
+            logger.info(f"Added to transcript: {user_name}: {transcription[:50]}...")
+            
+            # Decide if bot should respond
+            # Use probabilistic response to avoid interrupting too much
+            should_respond = random.random() < 0.3  # 30% chance to respond
+            
+            if should_respond:
+                response = await generate_call_response(chat_id, context)
+                
+                if response:
+                    # Check if audio mode is enabled
+                    is_audio_mode = config.get("audio_mode_config", {}).get(chat_id, False)
+                    
+                    if is_audio_mode:
+                        # Send audio response
+                        audio_bytes = await generate_audio_from_text(response)
+                        if audio_bytes:
+                            await context.bot.send_voice(chat_id=int(chat_id), voice=audio_bytes)
+                        else:
+                            # Fallback to text if audio generation fails
+                            await context.bot.send_message(chat_id=int(chat_id), text=response)
+                    else:
+                        # Send text response
+                        await context.bot.send_message(chat_id=int(chat_id), text=response)
+        else:
+            # Track transcription failures
+            call_state["error_count"] = call_state.get("error_count", 0) + 1
+            
+            # If too many errors, warn and potentially disable
+            if call_state["error_count"] >= 5:
+                logger.warning(f"Too many transcription errors in chat {chat_id}, may need intervention")
+                await context.bot.send_message(
+                    chat_id=int(chat_id),
+                    text="⚠️ I'm having trouble hearing the call. You can use /callleave if needed."
+                )
+                call_state["error_count"] = 0  # Reset after warning
+    
+    except Exception as e:
+        logger.error(f"Error handling call audio in chat {chat_id}: {e}", exc_info=True)
+        call_state["error_count"] = call_state.get("error_count", 0) + 1
+
 # --- Trivia System ---
 async def poll_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles user answers to the bot's trivia quiz polls."""
@@ -1314,6 +1529,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`/testrandom` - Trigger proactive chat now\n"
         "`/on`, `/off` - Moderation commands ON/OFF\n"
         "`/time HH:MM` - Set daily reminder time (IST)\n\n"
+        "**Proactive Calls** (Admin)\n"
+        "`/callon` - Enable proactive call participation\n"
+        "`/calloff` - Disable proactive call participation\n"
+        "`/callstatus` - Check call feature status\n"
+        "`/callquiet HH:MM HH:MM` - Set quiet hours (start end)\n"
+        "`/callconfig [min_participants]` - Configure call settings\n\n"
         "**Moderation** (Requires Mod ON & Admin)\n"
         "`/ban`, `/mute`, `/unmute` (Reply to user)\n"
         "`/delete` (Reply to message)\n"
@@ -1939,6 +2160,180 @@ async def send_daily_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
             # context.job.schedule_removal()
     except Exception as e: logger.error(f"Failed to send daily reminder: {e}")
 
+# --- Proactive Call Command Handlers ---
+
+async def turn_proactive_calls_on(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message: return
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+        await update.message.reply_text("Only admins can toggle proactive call features.")
+        return
+    
+    chat_id = str(update.message.chat_id)
+    config = load_config()
+    
+    if "proactive_call_config" not in config:
+        config["proactive_call_config"] = {}
+    
+    if chat_id not in config["proactive_call_config"]:
+        config["proactive_call_config"][chat_id] = {}
+    
+    config["proactive_call_config"][chat_id]["enabled"] = True
+    config["proactive_call_config"][chat_id].setdefault("min_participants", 2)
+    
+    save_config(config)
+    
+    await update.message.reply_text(
+        "✅ **Proactive call participation is now ON.**\n\n"
+        "The bot will now:\n"
+        "• Listen to voice messages in calls\n"
+        "• Transcribe speech to text\n"
+        "• Respond contextually when appropriate\n\n"
+        "Configure with `/callconfig` or set quiet hours with `/callquiet`.",
+        parse_mode='Markdown'
+    )
+
+async def turn_proactive_calls_off(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message: return
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+        await update.message.reply_text("Only admins can toggle proactive call features.")
+        return
+    
+    chat_id = str(update.message.chat_id)
+    config = load_config()
+    
+    if "proactive_call_config" not in config:
+        config["proactive_call_config"] = {}
+    
+    if chat_id not in config["proactive_call_config"]:
+        config["proactive_call_config"][chat_id] = {}
+    
+    config["proactive_call_config"][chat_id]["enabled"] = False
+    save_config(config)
+    
+    # Clean up active call state
+    if chat_id in active_calls:
+        del active_calls[chat_id]
+    
+    await update.message.reply_text("❌ **Proactive call participation is now OFF.**", parse_mode='Markdown')
+
+async def check_proactive_calls_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message: return
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+        await update.message.reply_text("Only admins can check call status.")
+        return
+    
+    chat_id = str(update.message.chat_id)
+    config = load_config()
+    
+    call_config = config.get("proactive_call_config", {}).get(chat_id, {})
+    is_enabled = call_config.get("enabled", False)
+    min_participants = call_config.get("min_participants", 2)
+    
+    quiet_hours = config.get("call_quiet_hours", {}).get(chat_id, {})
+    quiet_start = quiet_hours.get("start", "Not set")
+    quiet_end = quiet_hours.get("end", "Not set")
+    
+    status_text = (
+        f"ℹ️ **Proactive Call Status**\n\n"
+        f"**Enabled:** {'✅ Yes' if is_enabled else '❌ No'}\n"
+        f"**Min Participants:** {min_participants}\n"
+        f"**Quiet Hours:** {quiet_start} - {quiet_end}\n"
+    )
+    
+    if chat_id in active_calls:
+        call_state = active_calls[chat_id]
+        transcript_count = len(call_state.get("transcript", []))
+        error_count = call_state.get("error_count", 0)
+        status_text += f"\n**Current Call State:**\n"
+        status_text += f"• Transcripts: {transcript_count}\n"
+        status_text += f"• Errors: {error_count}\n"
+    
+    await update.message.reply_text(status_text, parse_mode='Markdown')
+
+async def set_call_quiet_hours(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message: return
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+        await update.message.reply_text("Only admins can set quiet hours.")
+        return
+    
+    if len(context.args) != 2:
+        await update.message.reply_text("Usage: `/callquiet HH:MM HH:MM` (start time and end time in 24-hour format)")
+        return
+    
+    try:
+        start_str = context.args[0]
+        end_str = context.args[1]
+        
+        # Validate time format
+        datetime.strptime(start_str, "%H:%M")
+        datetime.strptime(end_str, "%H:%M")
+        
+        chat_id = str(update.message.chat_id)
+        config = load_config()
+        
+        if "call_quiet_hours" not in config:
+            config["call_quiet_hours"] = {}
+        
+        config["call_quiet_hours"][chat_id] = {
+            "start": start_str,
+            "end": end_str
+        }
+        
+        save_config(config)
+        
+        await update.message.reply_text(
+            f"✅ Quiet hours set: **{start_str} to {end_str}** (IST)\n"
+            f"The bot will not participate in calls during these hours.",
+            parse_mode='Markdown'
+        )
+    
+    except ValueError:
+        await update.message.reply_text("Invalid time format. Use HH:MM (24-hour format).")
+    except Exception as e:
+        logger.error(f"Error setting quiet hours: {e}")
+        await update.message.reply_text("Error setting quiet hours.")
+
+async def configure_call_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message: return
+    if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
+        await update.message.reply_text("Only admins can configure call settings.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("Usage: `/callconfig [min_participants]`\nExample: `/callconfig 3`")
+        return
+    
+    try:
+        min_participants = int(context.args[0])
+        
+        if min_participants < 1:
+            await update.message.reply_text("Minimum participants must be at least 1.")
+            return
+        
+        chat_id = str(update.message.chat_id)
+        config = load_config()
+        
+        if "proactive_call_config" not in config:
+            config["proactive_call_config"] = {}
+        
+        if chat_id not in config["proactive_call_config"]:
+            config["proactive_call_config"][chat_id] = {"enabled": False}
+        
+        config["proactive_call_config"][chat_id]["min_participants"] = min_participants
+        save_config(config)
+        
+        await update.message.reply_text(
+            f"✅ Call configuration updated:\n"
+            f"**Minimum participants:** {min_participants}",
+            parse_mode='Markdown'
+        )
+    
+    except ValueError:
+        await update.message.reply_text("Invalid number. Please provide a valid integer.")
+    except Exception as e:
+        logger.error(f"Error configuring call settings: {e}")
+        await update.message.reply_text("Error updating call configuration.")
+
 # --- Main Function ---
 def main() -> None:
     # Ensure necessary directories/files exist (optional, helps first run)
@@ -2012,6 +2407,13 @@ def main() -> None:
         CommandHandler("on", turn_moderation_on), CommandHandler("off", turn_moderation_off),
         CommandHandler("time", set_reminder_time_handler),
 
+        # Proactive Call Commands (Admin)
+        CommandHandler("callon", turn_proactive_calls_on),
+        CommandHandler("calloff", turn_proactive_calls_off),
+        CommandHandler("callstatus", check_proactive_calls_status),
+        CommandHandler("callquiet", set_call_quiet_hours),
+        CommandHandler("callconfig", configure_call_settings),
+
         # Moderation Commands (Admin & Mod Enabled)
         CommandHandler("ban", ban_user), CommandHandler("mute", mute_user),
         CommandHandler("unmute", unmute_user), CommandHandler("delete", delete_message),
@@ -2019,6 +2421,9 @@ def main() -> None:
 
         # Optional simple AI handler
         CommandHandler(["ai1", "ai618"], simple_ai_handler),
+
+        # Voice message handler for proactive calls
+        MessageHandler(filters.VOICE, handle_call_audio),
 
         # Master handler for all non-command text (handles trivia, replies, mentions, reactions, history)
         MessageHandler(filters.TEXT & ~filters.COMMAND, master_text_handler)

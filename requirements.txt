@@ -11,3 +11,6 @@ pytz
 rdkit
 replicate
 telegraph
+telethon
+pytgcalls
+pydub
