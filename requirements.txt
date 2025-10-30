@@ -13,6 +13,7 @@ telegraph
 telethon
 tgcrypto
 pytgcalls
+tgcalls==2.0.0
 pydub
 edge-tts
 faster-whisper
