@@ -14,3 +14,8 @@ telegraph
 telethon
 pytgcalls
 pydub
+edge-tts
+faster-whisper
+soundfile
+numpy
+ffmpeg-python
