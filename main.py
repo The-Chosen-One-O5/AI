@@ -2308,6 +2308,10 @@ async def help_command(event):
         "`/callstatus` - Check call feature status\n"
         "`/callquiet HH:MM HH:MM` - Set quiet hours (start end)\n"
         "`/callconfig [min_participants]` - Configure call settings\n\n"
+        "**Call Commands** (Admin)\n"
+        "`/joincall` - Join the voice/video call\n"
+        "`/leavecall` - Leave the call\n"
+        "`/callinfo` - Show detailed call status and diagnostics\n\n"
         "**Moderation** (Requires Mod ON & Admin)\n"
         "`/ban`, `/mute`, `/unmute` (Reply to user)\n"
         "`/delete` (Reply to message)\n"
@@ -3135,16 +3139,16 @@ async def joincall_command(event) -> None:
         success = await join_voice_chat(chat_id_int, auto_join=False)
         
         if success:
-            await status_msg.edit_text("✅ Successfully joined the voice chat!")
+            await status_msg.edit("✅ Successfully joined the voice chat!")
         else:
-            await status_msg.edit_text(
+            await status_msg.edit(
                 "❌ Failed to join voice chat.\n"
                 "Make sure a voice chat is active in this group."
             )
     
     except Exception as e:
         logger.error(f"Error in joincall command: {e}", exc_info=True)
-        await status_msg.edit_text("❌ Error joining voice chat.")
+        await status_msg.edit("❌ Error joining voice chat.")
 
 async def leavecall_command(event) -> None:
     """Manually leave a voice chat."""
@@ -3166,13 +3170,13 @@ async def leavecall_command(event) -> None:
         success = await leave_voice_chat(chat_id_int)
         
         if success:
-            await status_msg.edit_text("✅ Successfully left the voice chat.")
+            await status_msg.edit("✅ Successfully left the voice chat.")
         else:
-            await status_msg.edit_text("⚠️ Attempted to leave voice chat (may have already left).")
+            await status_msg.edit("⚠️ Attempted to leave voice chat (may have already left).")
     
     except Exception as e:
         logger.error(f"Error in leavecall command: {e}", exc_info=True)
-        await status_msg.edit_text("❌ Error leaving voice chat.")
+        await status_msg.edit("❌ Error leaving voice chat.")
 
 async def callinfo_command(event) -> None:
     """Show detailed call state information."""
