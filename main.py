@@ -2133,7 +2133,7 @@ async def trivia_master_handler(event) -> bool:
         if text == 'me':
             if user.id not in session["players"]:
                 session["players"][user.id] = {"username": user.username or "", "first_name": user.first_name or "User", "score": 0}
-                await event.reply(f"{user.first_name or "User"} is in! ✅")
+                await event.reply(f"{user.first_name or 'User'} is in! ✅")
             else:
                 await event.reply("You're already in!")
             return True # Message handled
@@ -2213,7 +2213,7 @@ async def history_capture_handler(event):
 
     chat_id = event.chat_id
     history = chat_histories.setdefault(chat_id, deque(maxlen=30)) # Store last 30 messages
-    history.append(f"{event.sender.first_name or "User"}: {event.text}")
+    history.append(f"{event.sender.first_name or 'User'}: {event.text}")
     
     # Schedule random chat only if AI is enabled AND random chat is enabled for this group
     config = load_config()
@@ -2821,7 +2821,7 @@ async def ban_user(event) -> None:
     target_user = event.reply_to_msg_id and await event.get_reply_message().from_user
     try:
         await global_context.bot.ban_chat_member(event.chat_id, target_user.id)
-        await event.reply(f"Banned {target_user.first_name or "User"}.")
+        await event.reply(f"Banned {target_user.first_name or 'User'}.")
     except Exception as e: await event.reply(f"Failed to ban: {e}")
 
 async def mute_user(event) -> None:
@@ -2833,7 +2833,7 @@ async def mute_user(event) -> None:
     target_user = event.reply_to_msg_id and await event.get_reply_message().from_user
     try:
         await global_context.bot.restrict_chat_member(event.chat_id, target_user.id, ChatPermissions(can_send_messages=False))
-        await event.reply(f"Muted {target_user.first_name or "User"}.")
+        await event.reply(f"Muted {target_user.first_name or 'User'}.")
     except Exception as e: await event.reply(f"Failed to mute: {e}")
 
 async def unmute_user(event) -> None:
@@ -2847,7 +2847,7 @@ async def unmute_user(event) -> None:
         # Restore default permissions (adjust if your group has specific defaults)
         perms = ChatPermissions(can_send_messages=True, can_send_media_messages=True, can_send_other_messages=True, can_add_web_page_previews=True, can_send_polls=True, can_invite_users=True) # Common defaults
         await global_context.bot.restrict_chat_member(event.chat_id, target_user.id, perms)
-        await event.reply(f"Unmuted {target_user.first_name or "User"}.")
+        await event.reply(f"Unmuted {target_user.first_name or 'User'}.")
     except Exception as e: await event.reply(f"Failed to unmute: {e}")
 
 async def delete_message(event) -> None:
