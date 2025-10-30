@@ -228,7 +228,7 @@ class JobQueue:
         async def job_wrapper():
             await asyncio.sleep(when)
             job_data = type('JobData', (), {'data': data, 'name': name})()
-            context_obj = type('Context', (), {'job': job_data, 'bot': global_global_context.bot})()
+            context_obj = type('Context', (), {'job': job_data, 'bot': global_context.bot})()
             await callback(context_obj)
             if name and name in self.jobs: del self.jobs[name]
         task = asyncio.create_task(job_wrapper())
@@ -245,7 +245,7 @@ class JobQueue:
                 delay = (target - now).total_seconds()
                 await asyncio.sleep(delay)
                 job_data = type('JobData', (), {'data': data, 'name': name})()
-                context_obj = type('Context', (), {'job': job_data, 'bot': global_global_context.bot})()
+                context_obj = type('Context', (), {'job': job_data, 'bot': global_context.bot})()
                 await callback(context_obj)
         task = asyncio.create_task(daily_wrapper())
         if name: self.jobs[name] = task
@@ -1611,7 +1611,7 @@ async def generate_call_response(chat_id: str) -> str | None:
 
 async def handle_call_audio(event):
     """Handle voice messages in active calls for transcription and response with TTS/STT."""
-    if not update.message or not event.voice:
+    if not event.message or not event.voice:
         return
     
     chat_id = str(event.chat_id)
@@ -1712,7 +1712,7 @@ async def handle_call_audio(event):
 # --- Trivia System ---
 async def poll_answer_handler(event):
     """Handles user answers to the bot's trivia quiz polls."""
-    answer = update.poll_answer
+    answer = event
     # Find the chat session associated with this poll ID
     chat_id = None
     session = None
@@ -1766,7 +1766,7 @@ async def poll_answer_handler(event):
          else:
               logger.info(f"Player {user_id} in chat {chat_id} answered incorrectly (chose {chosen_index}, needed {correct_index}).")
 
-async def process_poll_end_callback(context: ContextTypes.DEFAULT_TYPE):
+async def process_poll_end_callback(context):
     """Job callback executed when a trivia poll's time expires."""
     job_data = context.job.data
     chat_id = job_data['chat_id']
@@ -1792,7 +1792,7 @@ async def process_poll_end_callback(context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(2) # Shorter delay after poll closes
         await ask_next_trivia_question(context, chat_id)
         
-async def get_new_trivia_question(context: ContextTypes.DEFAULT_TYPE, topic: str, asked_questions: list) -> dict | None:
+async def get_new_trivia_question(context, topic: str, asked_questions: list) -> dict | None:
     """Gets a new, unique multiple-choice trivia question, options, and correct index from the AI."""
     
     history_prompt_part = ""
@@ -1857,7 +1857,7 @@ async def start_trivia(event, topic: str, question_count: int):
         "current_correct_index": None # Store correct index
     }
 
-async def ask_next_trivia_question(context: ContextTypes.DEFAULT_TYPE, chat_id: str):
+async def ask_next_trivia_question(context, chat_id: str):
     """Fetches and sends the next trivia question as a Quiz Poll."""
     session = trivia_sessions.get(chat_id)
     if not session or session["state"] == "finished": return # Stop if game ended
@@ -1902,7 +1902,7 @@ async def ask_next_trivia_question(context: ContextTypes.DEFAULT_TYPE, chat_id: 
         logger.error(f"Failed to send trivia poll: {e}")
         await end_trivia(context, chat_id, "Error sending poll, game ending.")
 
-async def end_trivia(context: ContextTypes.DEFAULT_TYPE, chat_id: str, reason: str):
+async def end_trivia(context, chat_id: str, reason: str):
     session = trivia_sessions.get(chat_id, {})
     leaderboard = f"{reason}\n\n**Final Leaderboard:**\n"
     if session.get("players"):
@@ -1926,7 +1926,7 @@ async def end_trivia(context: ContextTypes.DEFAULT_TYPE, chat_id: str, reason: s
 
 async def smart_ai_handler(event) -> None:
     # Ensure update and message exist
-    if not update.message or not event.text:
+    if not event.message or not event.text:
         return
 
     prompt = " ".join(event.text.split()[1:])
@@ -2096,7 +2096,7 @@ async def smart_ai_handler(event) -> None:
 
 async def master_text_handler(event) -> None:
     # Ensure message and text exist before proceeding
-    if not update.message or not event.text:
+    if not event.message or not event.text:
         return
 
     chat_id = str(event.chat_id)
@@ -2170,7 +2170,7 @@ async def trivia_master_handler(event) -> bool:
 
 async def reply_handler(event):
     # Ensure messages exist
-    if not update.message or not event.text or not event.reply_to_msg_id and await event.get_reply_message() or not event.reply_to_msg_id and await event.get_reply_message().text: return
+    if not event.message or not event.text or not event.reply_to_msg_id and await event.get_reply_message() or not event.reply_to_msg_id and await event.get_reply_message().text: return
     
     thinking_message = await event.reply("...")
     # Use a consistent persona prompt
@@ -2184,7 +2184,7 @@ async def reply_handler(event):
     await send_final_response(update, context, response, thinking_message, "AI Reply")
 
 async def name_mention_handler(event):
-    if not update.message or not event.text: return
+    if not event.message or not event.text: return
 
     thinking_message = await event.reply("...")
     persona = "You are AI618, a witty and clever AI. The user mentioned your name. Respond in character."
@@ -2200,7 +2200,7 @@ async def proactive_reaction_handler(event):
     config = load_config()
     chat_id = str(event.chat_id)
     if not config.get("ai_enabled_config", {}).get(chat_id, False): return
-    if not update.message or not event.text: return
+    if not event.message or not event.text: return
 
     if random.random() < 0.45: # Reaction probability
         emoji_str = await get_emoji_reaction(event.text)
@@ -2217,7 +2217,7 @@ async def proactive_reaction_handler(event):
 
 async def history_capture_handler(event):
     # Ensure message and text exist
-    if not update.message or not event.text: return
+    if not event.message or not event.text: return
 
     chat_id = event.chat_id
     history = chat_histories.setdefault(chat_id, deque(maxlen=30)) # Store last 30 messages
@@ -2235,7 +2235,7 @@ async def history_capture_handler(event):
              # active_random_jobs isn't strictly needed now if we check get_jobs_by_name
              logger.info(f"Scheduled random chat job for chat_id: {chat_id}")
 
-async def random_chat_callback(context: ContextTypes.DEFAULT_TYPE):
+async def random_chat_callback(context):
     chat_id = context.job.data.get('chat_id')
     # No need for active_random_jobs tracking if we check get_jobs_by_name before scheduling
 
@@ -2274,7 +2274,7 @@ async def random_chat_callback(context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(event):
     # Ensure message exists
-    if not update.message: return
+    if not event.message: return
     help_text = (
         "**AI Features** (`/ai` prefix for most)\n"
         "`start trivia on [topic] [num]Q` - Start a trivia game (Admin)\n"
@@ -2317,7 +2317,7 @@ async def help_command(event):
 
 async def force_react_command(event):
     # Ensure message exists
-    if not update.message: return
+    if not event.message: return
     replied_message = event.reply_to_msg_id and await event.get_reply_message()
     if not replied_message or not replied_message.text:
         await event.reply("Reply to a text message to react.")
@@ -2334,7 +2334,7 @@ async def force_react_command(event):
             # Don't send error message to user, just log
 
 async def toggle_audio_mode_handler(event):
-    if not update.message: return
+    if not event.message: return
     if not await is_user_admin(event.chat_id, event.sender.id):
          await event.reply("Only admins can toggle audio mode.")
          return
@@ -2349,7 +2349,7 @@ async def toggle_audio_mode_handler(event):
 # --- Other Command Handlers ---
 
 async def chem_handler(event) -> None:
-    if not update.message: return
+    if not event.message: return
     smiles = " ".join(event.text.split()[1:])
     if not smiles:
         await event.reply("Provide a SMILES string. Usage: `/chem CCO`")
@@ -2375,7 +2375,7 @@ async def chem_handler(event) -> None:
         await event.reply("Error generating molecule image.")
 
 async def latex_handler(event) -> None:
-    if not update.message: return
+    if not event.message: return
     latex_code = " ".join(event.text.split()[1:])
     if not latex_code:
         await event.reply("Provide a LaTeX expression. Usage: `/tex E = mc^2`")
@@ -2395,11 +2395,11 @@ async def latex_handler(event) -> None:
         await event.reply("Error rendering LaTeX.")
 
 async def get_chat_id(event) -> None:
-    if not update.message: return
+    if not event.message: return
     await event.reply(f"This Chat ID is: `{event.chat_id}`", parse_mode='Markdown')
 
 async def remember_command(event) -> None:
-    if not update.message: return
+    if not event.message: return
     text = " ".join(event.text.split()[1:])
     if '=' not in text:
         await event.reply("Usage: `/remember topic = fact`")
@@ -2414,7 +2414,7 @@ async def remember_command(event) -> None:
     await event.reply(f"👍 Okay, remembered that '{topic}' is '{fact}'.")
 
 async def recall_command(event) -> None:
-    if not update.message: return
+    if not event.message: return
     if not event.text.split()[1:]:
         memory = load_memory()
         if not memory:
@@ -2432,7 +2432,7 @@ async def recall_command(event) -> None:
         await event.reply(f"I don't remember anything about '{topic}'.")
 
 async def forget_command(event) -> None:
-    if not update.message: return
+    if not event.message: return
     if not event.text.split()[1:]:
         await event.reply("What should I forget? Usage: `/forget topic`")
         return
@@ -2446,7 +2446,7 @@ async def forget_command(event) -> None:
         await event.reply(f"I didn't know anything about '{topic}' anyway.")
 
 async def summarize_command(event) -> None:
-    if not update.message: return
+    if not event.message: return
     chat_id = event.chat_id
     if chat_id not in chat_histories or len(chat_histories[chat_id]) < 3: # Lowered threshold
         await event.reply("Not enough recent chat history to summarize.")
@@ -2458,7 +2458,7 @@ async def summarize_command(event) -> None:
     await send_final_response(update, context, summary, thinking_message, "Chat Summary")
 
 async def studypoll_command(event) -> None:
-    if not update.message: return
+    if not event.message: return
     if not await is_user_admin(event.chat_id, event.sender.id):
         await event.reply("Only admins can create polls.")
         return
@@ -2477,15 +2477,15 @@ async def studypoll_command(event) -> None:
         await event.reply(f"Error creating poll: {e}")
 
 async def aipoll_handler(event) -> None:
-    if not update.message: return
+    if not event.message: return
     await event.reply("Use `/ai make a poll about [topic]` instead.")
 
 async def web_handler(event) -> None:
-    if not update.message: return
+    if not event.message: return
     await event.reply("Use `/ai [your query]` for web search.")
 
 async def nanoedit_handler(event) -> None:
-    if not update.message: return
+    if not event.message: return
     config = load_config()
     chat_id = str(event.chat_id)
     if not config.get("ai_enabled_config", {}).get(chat_id, False):
@@ -2563,7 +2563,7 @@ async def nanoedit_handler(event) -> None:
 
 
 async def askit_handler(event) -> None:
-    if not update.message: return
+    if not event.message: return
     config = load_config()
     chat_id = str(event.chat_id)
     if not config.get("ai_enabled_config", {}).get(chat_id, False):
@@ -2602,7 +2602,7 @@ async def askit_handler(event) -> None:
 
 async def videoedit_handler(event) -> None:
     """Generate video from image using Replicate's free/wan-2.1-i2v-14b-720p model."""
-    if not update.message: 
+    if not event.message: 
         return
     
     config = load_config()
@@ -2746,7 +2746,7 @@ async def videoedit_handler(event) -> None:
             pass
 
 async def simple_ai_handler(event) -> None:
-    if not update.message: return
+    if not event.message: return
     # Keep this for backward compatibility or simpler tasks if needed
     prompt = " ".join(event.text.split()[1:])
     if not prompt:
@@ -2760,68 +2760,68 @@ async def simple_ai_handler(event) -> None:
 # --- Settings and Moderation Command Handlers ---
 
 async def turn_ai_on(event) -> None:
-    if not update.message: return
+    if not event.message: return
     if not await is_user_admin(event.chat_id, event.sender.id): return
     chat_id = str(event.chat_id)
     config = load_config(); config.setdefault("ai_enabled_config", {})[chat_id] = True; save_config(config)
     await event.reply("✅ AI features **ON**.", parse_mode='Markdown')
 
 async def turn_ai_off(event) -> None:
-    if not update.message: return
+    if not event.message: return
     if not await is_user_admin(event.chat_id, event.sender.id): return
     chat_id = str(event.chat_id); config = load_config()
     config.setdefault("ai_enabled_config", {})[chat_id] = False; save_config(config)
     await event.reply("❌ AI features **OFF**.", parse_mode='Markdown')
 
 async def check_ai_status(event) -> None:
-    if not update.message: return
+    if not event.message: return
     if not await is_user_admin(event.chat_id, event.sender.id): return
     chat_id = str(event.chat_id); config = load_config()
     status = "ON" if config.get("ai_enabled_config", {}).get(chat_id, False) else "OFF"
     await event.reply(f"ℹ️ AI features are **{status}**.", parse_mode='Markdown')
 
 async def turn_random_chat_on(event) -> None:
-    if not update.message: return
+    if not event.message: return
     if not await is_user_admin(event.chat_id, event.sender.id): return
     chat_id = str(event.chat_id); config = load_config()
     config.setdefault("random_chat_config", {})[chat_id] = True; save_config(config)
     await event.reply("✅ Random chat **ON**.", parse_mode='Markdown')
 
 async def turn_random_chat_off(event) -> None:
-    if not update.message: return
+    if not event.message: return
     if not await is_user_admin(event.chat_id, event.sender.id): return
     chat_id = str(event.chat_id); config = load_config()
     config.setdefault("random_chat_config", {})[chat_id] = False; save_config(config)
     await event.reply("❌ Random chat **OFF**.", parse_mode='Markdown')
 
 async def check_random_status(event) -> None:
-    if not update.message: return
+    if not event.message: return
     if not await is_user_admin(event.chat_id, event.sender.id): return
     chat_id = str(event.chat_id); config = load_config()
     status = "ON" if config.get("random_chat_config", {}).get(chat_id, True) else "OFF" # Default ON
     await event.reply(f"ℹ️ Random chat is **{status}**.", parse_mode='Markdown')
 
 async def test_random_handler(event) -> None:
-    if not update.message: return
+    if not event.message: return
     if not await is_user_admin(event.chat_id, event.sender.id): return
     await event.reply("Triggering random chat logic now...")
     # Schedule immediately
     global_context.job_queue.run_once(random_chat_callback, 0, data={"chat_id": event.chat_id})
 
 async def turn_moderation_on(event) -> None:
-    if not update.message: return
+    if not event.message: return
     if not await is_user_admin(event.chat_id, event.sender.id): return
     config = load_config(); config["moderation_enabled"] = True; save_config(config)
     await event.reply("✅ Moderation commands **ON**.", parse_mode='Markdown')
 
 async def turn_moderation_off(event) -> None:
-    if not update.message: return
+    if not event.message: return
     if not await is_user_admin(event.chat_id, event.sender.id): return
     config = load_config(); config["moderation_enabled"] = False; save_config(config)
     await event.reply("❌ Moderation commands **OFF**.", parse_mode='Markdown')
 
 async def ban_user(event) -> None:
-    if not update.message: return
+    if not event.message: return
     config = load_config()
     if not config.get("moderation_enabled", True): await event.reply("Mod commands off."); return
     if not await is_user_admin(event.chat_id, event.sender.id): await event.reply("Admins only."); return
@@ -2833,7 +2833,7 @@ async def ban_user(event) -> None:
     except Exception as e: await event.reply(f"Failed to ban: {e}")
 
 async def mute_user(event) -> None:
-    if not update.message: return
+    if not event.message: return
     config = load_config();
     if not config.get("moderation_enabled", True): await event.reply("Mod commands off."); return
     if not await is_user_admin(event.chat_id, event.sender.id): await event.reply("Admins only."); return
@@ -2845,7 +2845,7 @@ async def mute_user(event) -> None:
     except Exception as e: await event.reply(f"Failed to mute: {e}")
 
 async def unmute_user(event) -> None:
-    if not update.message: return
+    if not event.message: return
     config = load_config();
     if not config.get("moderation_enabled", True): await event.reply("Mod commands off."); return
     if not await is_user_admin(event.chat_id, event.sender.id): await event.reply("Admins only."); return
@@ -2859,7 +2859,7 @@ async def unmute_user(event) -> None:
     except Exception as e: await event.reply(f"Failed to unmute: {e}")
 
 async def delete_message(event) -> None:
-    if not update.message: return
+    if not event.message: return
     config = load_config();
     if not config.get("moderation_enabled", True): await event.reply("Mod commands off."); return
     if not await is_user_admin(event.chat_id, event.sender.id): await event.reply("Admins only."); return
@@ -2872,7 +2872,7 @@ async def delete_message(event) -> None:
     except Exception as e: await event.reply(f"Failed to delete: {e}")
 
 async def lock_chat(event) -> None:
-    if not update.message: return
+    if not event.message: return
     config = load_config();
     if not config.get("moderation_enabled", True): await event.reply("Mod commands off."); return
     if not await is_user_admin(event.chat_id, event.sender.id): await event.reply("Admins only."); return
@@ -2882,7 +2882,7 @@ async def lock_chat(event) -> None:
     except Exception as e: await event.reply(f"Failed to lock: {e}")
 
 async def unlock_chat(event) -> None:
-    if not update.message: return
+    if not event.message: return
     config = load_config();
     if not config.get("moderation_enabled", True): await event.reply("Mod commands off."); return
     if not await is_user_admin(event.chat_id, event.sender.id): await event.reply("Admins only."); return
@@ -2894,7 +2894,7 @@ async def unlock_chat(event) -> None:
     except Exception as e: await event.reply(f"Failed to unlock: {e}")
 
 async def set_reminder_time_handler(event) -> None:
-    if not update.message: return
+    if not event.message: return
     if not await is_user_admin(event.chat_id, event.sender.id): await event.reply("Admins only."); return
     if not event.text.split()[1:]: await event.reply("Usage: /time HH:MM (24-hour IST)"); return
     try:
@@ -2910,7 +2910,7 @@ async def set_reminder_time_handler(event) -> None:
     except ValueError: await event.reply("Invalid time format. Use HH:MM.")
     except Exception as e: await event.reply(f"Error setting time: {e}")
 
-async def send_daily_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
+async def send_daily_reminder(context) -> None:
     if TARGET_CHAT_ID == 0: logger.warning("TARGET_CHAT_ID not set or invalid."); return
     try:
         ist = pytz.timezone('Asia/Kolkata')
@@ -2936,7 +2936,7 @@ async def send_daily_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
 # --- Proactive Call Command Handlers ---
 
 async def turn_proactive_calls_on(event) -> None:
-    if not update.message: return
+    if not event.message: return
     if not await is_user_admin(event.chat_id, event.sender.id):
         await event.reply("Only admins can toggle proactive call features.")
         return
@@ -2966,7 +2966,7 @@ async def turn_proactive_calls_on(event) -> None:
     )
 
 async def turn_proactive_calls_off(event) -> None:
-    if not update.message: return
+    if not event.message: return
     if not await is_user_admin(event.chat_id, event.sender.id):
         await event.reply("Only admins can toggle proactive call features.")
         return
@@ -2990,7 +2990,7 @@ async def turn_proactive_calls_off(event) -> None:
     await event.reply("❌ **Proactive call participation is now OFF.**", parse_mode='Markdown')
 
 async def check_proactive_calls_status(event) -> None:
-    if not update.message: return
+    if not event.message: return
     if not await is_user_admin(event.chat_id, event.sender.id):
         await event.reply("Only admins can check call status.")
         return
@@ -3024,7 +3024,7 @@ async def check_proactive_calls_status(event) -> None:
     await event.reply(status_text, parse_mode='Markdown')
 
 async def set_call_quiet_hours(event) -> None:
-    if not update.message: return
+    if not event.message: return
     if not await is_user_admin(event.chat_id, event.sender.id):
         await event.reply("Only admins can set quiet hours.")
         return
@@ -3067,7 +3067,7 @@ async def set_call_quiet_hours(event) -> None:
         await event.reply("Error setting quiet hours.")
 
 async def configure_call_settings(event) -> None:
-    if not update.message: return
+    if not event.message: return
     if not await is_user_admin(event.chat_id, event.sender.id):
         await event.reply("Only admins can configure call settings.")
         return
@@ -3109,7 +3109,7 @@ async def configure_call_settings(event) -> None:
 
 async def joincall_command(event) -> None:
     """Manually join a voice chat."""
-    if not update.message: return
+    if not event.message: return
     if not await is_user_admin(event.chat_id, event.sender.id):
         await event.reply("Only admins can control call participation.")
         return
@@ -3148,7 +3148,7 @@ async def joincall_command(event) -> None:
 
 async def leavecall_command(event) -> None:
     """Manually leave a voice chat."""
-    if not update.message: return
+    if not event.message: return
     if not await is_user_admin(event.chat_id, event.sender.id):
         await event.reply("Only admins can control call participation.")
         return
@@ -3176,7 +3176,7 @@ async def leavecall_command(event) -> None:
 
 async def callinfo_command(event) -> None:
     """Show detailed call state information."""
-    if not update.message: return
+    if not event.message: return
     
     chat_id_int = event.chat_id
     call_state = await get_call_state(chat_id_int)
@@ -3211,7 +3211,7 @@ async def callinfo_command(event) -> None:
 
 async def ttson(event) -> None:
     """Enable TTS for this chat."""
-    if not update.message: return
+    if not event.message: return
     if not await is_user_admin(event.chat_id, event.sender.id):
         await event.reply("Only admins can enable TTS.")
         return
@@ -3232,7 +3232,7 @@ async def ttson(event) -> None:
 
 async def ttsoff(event) -> None:
     """Disable TTS for this chat."""
-    if not update.message: return
+    if not event.message: return
     if not await is_user_admin(event.chat_id, event.sender.id):
         await event.reply("Only admins can disable TTS.")
         return
@@ -3253,7 +3253,7 @@ async def ttsoff(event) -> None:
 
 async def ttsconfig(event) -> None:
     """Configure TTS voice and rate. Usage: /ttsconfig [voice] [rate]"""
-    if not update.message: return
+    if not event.message: return
     if not await is_user_admin(event.chat_id, event.sender.id):
         await event.reply("Only admins can configure TTS.")
         return
@@ -3298,7 +3298,7 @@ async def ttsconfig(event) -> None:
 
 async def ttsstatus(event) -> None:
     """Check TTS status for this chat."""
-    if not update.message: return
+    if not event.message: return
     
     chat_id = str(event.chat_id)
     config = load_config()
@@ -3319,7 +3319,7 @@ async def ttsstatus(event) -> None:
 
 async def stton(event) -> None:
     """Enable STT for this chat."""
-    if not update.message: return
+    if not event.message: return
     if not await is_user_admin(event.chat_id, event.sender.id):
         await event.reply("Only admins can enable STT.")
         return
@@ -3343,7 +3343,7 @@ async def stton(event) -> None:
 
 async def sttoff(event) -> None:
     """Disable STT for this chat."""
-    if not update.message: return
+    if not event.message: return
     if not await is_user_admin(event.chat_id, event.sender.id):
         await event.reply("Only admins can disable STT.")
         return
@@ -3364,7 +3364,7 @@ async def sttoff(event) -> None:
 
 async def sttconfig(event) -> None:
     """Configure STT language. Usage: /sttconfig [language]"""
-    if not update.message: return
+    if not event.message: return
     if not await is_user_admin(event.chat_id, event.sender.id):
         await event.reply("Only admins can configure STT.")
         return
@@ -3404,7 +3404,7 @@ async def sttconfig(event) -> None:
 
 async def sttstatus(event) -> None:
     """Check STT status for this chat."""
-    if not update.message: return
+    if not event.message: return
     
     chat_id = str(event.chat_id)
     config = load_config()
