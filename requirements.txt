@@ -10,10 +10,4 @@ pytz
 rdkit
 replicate
 telegraph
-telethon
-tgcrypto
-edge-tts
-faster-whisper
-soundfile
-numpy
-ffmpeg-python
+python-telegram-bot
