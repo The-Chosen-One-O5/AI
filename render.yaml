@@ -1,7 +1,0 @@
-services:
-  - type: web
-    name: AI  # Match existing
-    env: python  # Or your env
-    dockerfilePath: ./Dockerfile  # Path to your Dockerfile
-    # Or for prebuilt: dockerImage: yourusername/yourapp:latest
-    # Other settings like env vars, etc.
