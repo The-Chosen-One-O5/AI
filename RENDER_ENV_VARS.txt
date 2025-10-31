@@ -1,0 +1,74 @@
+# Environment Variables for Render.com Deployment
+
+# Copy these to your Render.com dashboard under Environment tab
+# Go to: Dashboard → Your Service → Environment → Add Environment Variable
+
+# ==============================================================================
+# REQUIRED VARIABLES (Must be set for bot to work)
+# ==============================================================================
+
+BOT_TOKEN=your_bot_token_from_botfather
+TARGET_CHAT_ID=-1001937965792
+
+# At least ONE of these AI providers is required:
+CEREBRAS_API_KEY=your_cerebras_api_key
+GROQ_API_KEY=your_groq_api_key
+CHATANYWHERE_API_KEY=your_chatanywhere_api_key
+
+# ==============================================================================
+# OPTIONAL VARIABLES (Add as needed for additional features)
+# ==============================================================================
+
+# Web Search (for AI web search capability)
+BRAVE_API_KEY=
+
+# Vision AI (for /askit, /nanoedit image analysis)
+TYPEGPT_FAST_API_KEY=
+GOOGLE_API_KEY=
+OPENROUTER_API_KEY=
+
+# Audio Generation (for /audio text-to-speech mode)
+REPLICATE_API_KEY=
+
+# Video Generation (for /videoedit, video generation)
+SAMURAI_API_KEY=
+
+# Additional Providers
+FALLBACK_API_KEY=
+GROK_API_KEY=
+
+# ==============================================================================
+# NOTES
+# ==============================================================================
+
+# 1. PORT is automatically set by Render - DO NOT add it manually
+# 2. Never commit these values to git
+# 3. Get BOT_TOKEN from @BotFather on Telegram
+# 4. Get chat ID by running /chatid command in your group
+# 5. See RENDER_DEPLOYMENT.md for API key sources
+
+# ==============================================================================
+# HOW TO ADD IN RENDER
+# ==============================================================================
+
+# 1. Go to https://dashboard.render.com
+# 2. Select your service
+# 3. Click "Environment" tab on the left
+# 4. Click "Add Environment Variable"
+# 5. Enter Key and Value
+# 6. Click "Save Changes" (this will trigger a redeploy)
+# 7. Repeat for each variable
+
+# ==============================================================================
+# VERIFICATION
+# ==============================================================================
+
+# After deployment, check logs for:
+# - "Keep-alive server started."
+# - "Bot is running..."
+# 
+# Test in Telegram:
+# - /start
+# - /help
+# - /aistatus
+# - /ai Hello!

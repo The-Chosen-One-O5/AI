@@ -2,6 +2,8 @@
 
 A comprehensive AI-powered Telegram bot with trivia games, image/video generation, and advanced chat management features.
 
+> **🚀 New to this bot?** Start with **[QUICKSTART.md](QUICKSTART.md)** for a 5-minute setup guide!
+
 ## Features
 
 ### 🤖 AI Assistant
@@ -55,11 +57,29 @@ pip install -r requirements.txt
 python main.py
 ```
 
+### Cloud Deployment (Render.com)
+
+For production deployment on Render.com, see the comprehensive guide:
+- **[RENDER_DEPLOYMENT.md](RENDER_DEPLOYMENT.md)** - Complete Render.com deployment instructions
+
+Quick steps:
+1. Connect your GitHub repo to Render
+2. Create a new Web Service
+3. Set environment variables in Render dashboard
+4. Deploy automatically
+
 ## Configuration
 
 ### Required Environment Variables
 
-Create a `.env` file with:
+For local development, copy `.env.example` to `.env` and fill in your values:
+
+```bash
+cp .env.example .env
+# Then edit .env with your actual API keys
+```
+
+Or create a `.env` file manually with:
 
 ```bash
 # Essential

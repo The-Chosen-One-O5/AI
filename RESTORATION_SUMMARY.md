@@ -153,23 +153,44 @@ All original bot commands remain functional:
 
 ## How to Run
 
-1. **Set BOT_TOKEN in .env**:
+### Local Development
+
+1. **Copy environment template**:
+   ```bash
+   cp .env.example .env
+   ```
+
+2. **Edit .env with your credentials**:
    ```bash
    BOT_TOKEN=your_bot_token_from_botfather
    TARGET_CHAT_ID=-1001234567890
+   CEREBRAS_API_KEY=your_cerebras_key
+   # Add other API keys as needed
    ```
 
-2. **Install dependencies**:
+3. **Install dependencies**:
    ```bash
    pip install -r requirements.txt
    ```
 
-3. **Run the bot**:
+4. **Run the bot**:
    ```bash
    python main.py
    ```
 
 No Docker, no userbot session, no phone number authentication needed!
+
+### Cloud Deployment (Render.com)
+
+See **[RENDER_DEPLOYMENT.md](RENDER_DEPLOYMENT.md)** for complete instructions.
+
+Quick steps:
+1. Connect your GitHub repo to Render.com
+2. Create a Web Service
+3. Set environment variables in Render dashboard (not .env file)
+4. Deploy automatically
+
+Environment variables are read from Render's dashboard and injected at runtime.
 
 ## Benefits
 
@@ -191,16 +212,18 @@ If you were using call features, you'll need to:
 
 ```
 .
-├── .env                  # Environment variables (BOT_TOKEN, etc.)
-├── .gitignore           # Git ignore rules
-├── README.md            # Clean documentation
-├── keep_alive.py        # Flask keep-alive server
-├── main.py              # Main bot logic (~1800 lines)
-├── requirements.txt     # Python dependencies
-├── config.json          # Runtime config (auto-generated)
-├── memory.json          # Bot memory (auto-generated)
-├── gossip.json          # Saved messages (auto-generated)
-└── RESTORATION_SUMMARY.md  # This file
+├── .env                    # Environment variables (BOT_TOKEN, etc.) - DO NOT COMMIT
+├── .env.example            # Environment variable template
+├── .gitignore              # Git ignore rules
+├── README.md               # Clean documentation
+├── RENDER_DEPLOYMENT.md    # Render.com deployment guide
+├── RESTORATION_SUMMARY.md  # This file
+├── keep_alive.py           # Flask keep-alive server
+├── main.py                 # Main bot logic (~1800 lines)
+├── requirements.txt        # Python dependencies
+├── config.json             # Runtime config (auto-generated)
+├── memory.json             # Bot memory (auto-generated)
+└── gossip.json             # Saved messages (auto-generated)
 ```
 
 ## Version Info
