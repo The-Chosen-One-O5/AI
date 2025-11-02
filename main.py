@@ -198,33 +198,63 @@ async def generate_audio_from_text(text: str, voice: str = DEFAULT_TTS_VOICE) ->
     """Generate audio from text using Edge TTS (free and unlimited)."""
     cleaned_text = re.sub(r'[*_`]', '', text)  # Remove markdown for cleaner TTS
     if not cleaned_text.strip():
+        logger.warning("No text to convert to audio after cleaning")
         return None
+    
+    # Use /tmp for temp files (more reliable across platforms)
+    temp_file = f"/tmp/tts_temp_{id(text)}_{random.randint(1000, 9999)}.mp3"
     
     try:
         logger.info(f"Generating audio with Edge TTS using voice: {voice}")
+        logger.info(f"Text length: {len(cleaned_text)} characters")
+        logger.info(f"Temp file: {temp_file}")
         
-        # Create a temporary file to store the audio
-        temp_file = f"tts_temp_{id(text)}.mp3"
-        
-        # Generate TTS
+        # Generate TTS using Edge TTS Communicate API
         communicate = edge_tts.Communicate(cleaned_text, voice)
         await communicate.save(temp_file)
+        
+        # Verify file was created and has content
+        if not os.path.exists(temp_file):
+            logger.error(f"Temp file was not created: {temp_file}")
+            return None
+        
+        file_size = os.path.getsize(temp_file)
+        logger.info(f"Audio file created: {file_size} bytes")
+        
+        if file_size == 0:
+            logger.error("Generated audio file is empty")
+            os.remove(temp_file)
+            return None
         
         # Read the generated file
         with open(temp_file, 'rb') as f:
             audio_bytes = f.read()
         
+        logger.info(f"Successfully generated audio: {len(audio_bytes)} bytes")
+        
         # Clean up temp file
         try:
             os.remove(temp_file)
-        except:
-            pass
+            logger.debug(f"Cleaned up temp file: {temp_file}")
+        except Exception as cleanup_error:
+            logger.warning(f"Failed to clean up temp file {temp_file}: {cleanup_error}")
         
-        logger.info(f"Successfully generated audio: {len(audio_bytes)} bytes")
         return audio_bytes
         
+    except FileNotFoundError as e:
+        logger.error(f"File not found error during audio generation: {e}")
+        return None
+    except PermissionError as e:
+        logger.error(f"Permission error during audio generation: {e}")
+        return None
     except Exception as e:
-        logger.error(f"Failed to generate audio with Edge TTS: {e}")
+        logger.error(f"Failed to generate audio with Edge TTS: {e}", exc_info=True)
+        # Clean up temp file if it exists
+        try:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+        except Exception as cleanup_error:
+            logger.warning(f"Failed to clean up temp file after error: {cleanup_error}")
         return None
 
 async def generate_video_from_text(prompt: str) -> bytes | None:
@@ -333,21 +363,26 @@ async def send_final_response(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         # Get the configured voice for this chat
         voice = config.get("tts_voice_config", {}).get(chat_id, DEFAULT_TTS_VOICE)
+        logger.info(f"Audio mode enabled for chat {chat_id}, using voice: {voice}")
+        
         audio_bytes = await generate_audio_from_text(response_text, voice)
         if audio_bytes:
+            logger.info(f"Audio generated successfully, sending to Telegram ({len(audio_bytes)} bytes)")
             try:
                 await context.bot.send_voice(chat_id=update.effective_chat.id, voice=audio_bytes)
+                logger.info("Audio sent successfully to Telegram")
                 # Delete thinking message after sending audio
                 try: await thinking_message.delete()
                 except BadRequest: pass
             except Exception as e:
-                 logger.error(f"Failed to send voice message: {e}")
+                 logger.error(f"Failed to send voice message to Telegram: {e}", exc_info=True)
                  # Fallback to text if sending voice fails
                  try:
                      await context.bot.edit_message_text("Failed to send audio, sending text.", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
                  except BadRequest: pass
                  await send_or_telegraph_fallback(update, context, response_text, thinking_message, prompt_title)
         else:
+            logger.error("Audio generation returned None, falling back to text")
             try:
                 await context.bot.edit_message_text("Audio generation failed, sending text.", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
             except BadRequest: pass
