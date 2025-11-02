@@ -180,14 +180,16 @@ async def delete_message_callback(context: ContextTypes.DEFAULT_TYPE):
 async def send_deletable_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str, reply_to_message_id: int | None = None):
     try:
         sent_message = await context.bot.send_message(chat_id=chat_id, text=text, reply_to_message_id=reply_to_message_id, parse_mode='Markdown')
-        context.job_queue.run_once(delete_message_callback, 120, data={'chat_id': chat_id, 'message_id': sent_message.message_id})
+        if context.job_queue:
+            context.job_queue.run_once(delete_message_callback, 120, data={'chat_id': chat_id, 'message_id': sent_message.message_id})
         return sent_message
     except BadRequest as e:
         logger.error(f"Failed to send deletable message (Markdown maybe?): {e}")
         # Fallback to plain text if Markdown fails
         try:
             sent_message = await context.bot.send_message(chat_id=chat_id, text=text, reply_to_message_id=reply_to_message_id)
-            context.job_queue.run_once(delete_message_callback, 120, data={'chat_id': chat_id, 'message_id': sent_message.message_id})
+            if context.job_queue:
+                context.job_queue.run_once(delete_message_callback, 120, data={'chat_id': chat_id, 'message_id': sent_message.message_id})
             return sent_message
         except Exception as e2:
             logger.error(f"Failed to send deletable message even as plain text: {e2}")
@@ -887,12 +889,15 @@ async def ask_next_trivia_question(context: ContextTypes.DEFAULT_TYPE, chat_id: 
         session["state"] = "polling" # Update state
 
         # Schedule job to process results after poll closes + small buffer
-        context.job_queue.run_once(
-             process_poll_end_callback,
-             62, # open_period + buffer
-             data={'chat_id': chat_id, 'expected_poll_id': poll_message.poll.id},
-             name=f"trivia_poll_end_{chat_id}_{poll_message.poll.id}"
-         )
+        if context.job_queue:
+            context.job_queue.run_once(
+                 process_poll_end_callback,
+                 62, # open_period + buffer
+                 data={'chat_id': chat_id, 'expected_poll_id': poll_message.poll.id},
+                 name=f"trivia_poll_end_{chat_id}_{poll_message.poll.id}"
+             )
+        else:
+            logger.warning("Job queue is None in ask_next_trivia_question, cannot schedule poll end callback")
 
     except Exception as e:
         logger.error(f"Failed to send trivia poll: {e}")
@@ -1197,6 +1202,11 @@ async def history_capture_handler(update: Update, context: ContextTypes.DEFAULT_
     chat_id_str = str(chat_id)
     if config.get("ai_enabled_config", {}).get(chat_id_str, False) and \
        config.get("random_chat_config", {}).get(chat_id_str, True): # Default random ON if not set
+        # Check if job_queue is available before using it
+        if not context.job_queue:
+            logger.warning("Job queue is None in history_capture_handler, cannot schedule random chat")
+            return
+        
         # Check existing jobs for this chat
         current_jobs = context.job_queue.get_jobs_by_name(f"random_chat_{chat_id}")
         if not current_jobs: # Only schedule if no job exists
@@ -1668,6 +1678,12 @@ async def check_random_status(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def test_random_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
     if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context): return
+    
+    if not context.job_queue:
+        await update.message.reply_text("⚠️ Job queue not available.")
+        logger.warning("Job queue is None in test_random_handler")
+        return
+        
     await update.message.reply_text("Triggering random chat logic now...")
     # Schedule immediately
     context.job_queue.run_once(random_chat_callback, 0, data={"chat_id": update.message.chat_id})
@@ -1765,14 +1781,22 @@ async def set_reminder_time_handler(update: Update, context: ContextTypes.DEFAUL
         new_time_str = context.args[0]
         new_time_obj = datetime.strptime(new_time_str, "%H:%M").time()
         config = load_config(); config["reminder_time"] = new_time_str; save_config(config)
-        # Reschedule job
+        
+        # Reschedule job - with null check
+        if not context.job_queue:
+            await update.message.reply_text("⚠️ Job queue not available. Time saved but job not rescheduled.")
+            logger.warning("Job queue is None in set_reminder_time_handler")
+            return
+            
         current_jobs = context.job_queue.get_jobs_by_name("daily_reminder")
         for job in current_jobs: job.schedule_removal()
         reminder_time = time(hour=new_time_obj.hour, minute=new_time_obj.minute, tzinfo=pytz.timezone('Asia/Kolkata'))
         context.job_queue.run_daily(send_daily_reminder, time=reminder_time, name="daily_reminder")
         await update.message.reply_text(f"✅ Reminder time updated to {new_time_str} IST.")
     except ValueError: await update.message.reply_text("Invalid time format. Use HH:MM.")
-    except Exception as e: await update.message.reply_text(f"Error setting time: {e}")
+    except Exception as e: 
+        logger.error(f"Error in set_reminder_time_handler: {e}", exc_info=True)
+        await update.message.reply_text(f"Error setting time: {e}")
 
 async def send_daily_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
     if TARGET_CHAT_ID == 0: logger.warning("TARGET_CHAT_ID not set or invalid."); return
@@ -1806,34 +1830,6 @@ def main() -> None:
 
     application = Application.builder().token(BOT_TOKEN).build()
     
-# Load config for reminder time
-    config = load_config()
-    reminder_time_str = config.get("reminder_time", "04:00")
-
-    # --- Register ALL Handlers ---
-    handlers = [
-        # ... (Your list of CommandHandlers and MessageHandlers remains the same) ...
-        PollAnswerHandler(poll_answer_handler), # Handles answers to quiz polls
-        MessageHandler(filters.TEXT & ~filters.COMMAND, master_text_handler) # Handles registration, replies, mentions etc.
-    ]
-
-    # --- Schedule Daily Reminder (AFTER application is built) ---
-    try:
-        hour, minute = map(int, reminder_time_str.split(':'))
-        # Access job_queue AFTER application is built and handlers are added
-        job_queue = application.job_queue
-        reminder_time = time(hour=hour, minute=minute, tzinfo=pytz.timezone('Asia/Kolkata'))
-        # Add the job if it doesn't exist already
-        if not job_queue.get_jobs_by_name("daily_reminder"):
-            job_queue.run_daily(send_daily_reminder, time=reminder_time, name="daily_reminder")
-            logger.info(f"Daily reminder job scheduled for {reminder_time_str} IST.")
-        else:
-            logger.info("Daily reminder job already scheduled.")
-    except ValueError:
-        logger.error(f"Invalid reminder time format: {reminder_time_str}. Reminder not scheduled.")
-    except Exception as e:
-        logger.error(f"Error scheduling daily reminder: {e}") # Catch other potential errors
-
     # --- Register ALL Handlers ---
     handlers = [
         # Core Commands
@@ -1881,6 +1877,29 @@ def main() -> None:
         MessageHandler(filters.TEXT & ~filters.COMMAND, master_text_handler)
     ]
     application.add_handlers(handlers)
+    
+    # --- Schedule Daily Reminder (AFTER application is built and handlers are registered) ---
+    config = load_config()
+    reminder_time_str = config.get("reminder_time", "04:00")
+    try:
+        hour, minute = map(int, reminder_time_str.split(':'))
+        # Access job_queue AFTER application is built and handlers are added
+        job_queue = application.job_queue
+        if job_queue:
+            reminder_time = time(hour=hour, minute=minute, tzinfo=pytz.timezone('Asia/Kolkata'))
+            # Add the job if it doesn't exist already
+            existing_jobs = job_queue.get_jobs_by_name("daily_reminder")
+            if not existing_jobs:
+                job_queue.run_daily(send_daily_reminder, time=reminder_time, name="daily_reminder")
+                logger.info(f"Daily reminder job scheduled for {reminder_time_str} IST.")
+            else:
+                logger.info("Daily reminder job already scheduled.")
+        else:
+            logger.warning("Job queue is not available. Daily reminder not scheduled.")
+    except ValueError:
+        logger.error(f"Invalid reminder time format: {reminder_time_str}. Reminder not scheduled.")
+    except Exception as e:
+        logger.error(f"Error scheduling daily reminder: {e}", exc_info=True)
 
     # Start the keep-alive server thread
     keep_alive()
