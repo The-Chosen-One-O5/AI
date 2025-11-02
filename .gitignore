@@ -57,6 +57,7 @@ bot_session.session
 *.mp3
 *.raw
 *.pcm
+tts_temp_*.mp3
 
 # Logs
 *.log

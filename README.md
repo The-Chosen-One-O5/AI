@@ -24,6 +24,12 @@ A comprehensive AI-powered Telegram bot with trivia games, image/video generatio
 - **LaTeX Rendering**: Mathematical expressions
 - **Molecular Structures**: SMILES to chemical structure images
 
+### 🎤 Text-to-Speech
+- **Free & Unlimited**: Microsoft Edge TTS (no API costs)
+- **Multiple Voices**: 9+ voice options including deep male and female voices
+- **Per-Chat Configuration**: Each chat can use a different voice
+- **High Quality**: Neural TTS with natural-sounding speech
+
 ### 🛡️ Moderation & Admin
 - **User Management**: Ban, mute, unmute users
 - **Message Control**: Delete messages, lock/unlock chats
@@ -91,9 +97,6 @@ CEREBRAS_API_KEY=your_cerebras_key
 GROQ_API_KEY=your_groq_key
 CHATANYWHERE_API_KEY=your_chatanywhere_key
 
-# For voice responses (optional)
-REPLICATE_API_KEY=your_replicate_key
-
 # For web search (optional)
 BRAVE_API_KEY=your_brave_api_key
 
@@ -148,7 +151,9 @@ The bot creates and manages these JSON files:
 /tex [LaTeX]           - Render LaTeX expression
 /summarize             - Summarize recent chat
 /studypoll "Q" "A1" .. - Create study poll (Admin)
-/audio                 - Toggle audio mode for AI responses
+/audio                 - Toggle audio mode for AI responses (Free Edge TTS)
+/audio list            - Show available TTS voices
+/audio [voice]         - Set TTS voice (e.g., guy, davis, jenny)
 ```
 
 ### Memory Commands
@@ -206,7 +211,8 @@ Core libraries:
 - `cerebras-cloud-sdk` - Cerebras AI
 - `groq` - Groq API
 - `openai` - OpenAI-compatible clients
-- `replicate` - TTS/video generation
+- `edge-tts` - Free text-to-speech (Microsoft Edge)
+- `replicate` - Video generation
 - `rdkit` - Chemistry structures
 - `Pillow` - Image processing
 - `BeautifulSoup4` - Web scraping

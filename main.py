@@ -16,6 +16,7 @@ from threading import Thread # Needed for keep_alive
 # --- Library Imports ---
 import replicate
 import emoji
+import edge_tts
 from openai import AsyncOpenAI, OpenAIError
 from cerebras.cloud.sdk import Cerebras
 from groq import AsyncGroq
@@ -76,7 +77,7 @@ SAMURAI_API_KEY = os.environ.get('SAMURAI_API_KEY') # New key for Text-to-Video
 #   - OpenRouter: moonshotai/kimi-vl-a3b-thinking:free
 #
 # Audio/TTS:
-#   - Replicate: minimax/speech-02-hd
+#   - Edge TTS (Free, unlimited): Default voice "en-US-GuyNeural"
 #
 # Image Generation:
 #   - Infip API: Qwen model
@@ -90,14 +91,26 @@ if not BOT_TOKEN:
     exit()
 if REPLICATE_API_KEY:
     os.environ['REPLICATE_API_TOKEN'] = REPLICATE_API_KEY # Replicate specifically needs this env var
-else:
-    print("WARNING: REPLICATE_API_KEY not set. Audio mode will fail.")
 
 
 # --- State Management ---
 chat_histories = {}
 active_random_jobs = set()
 trivia_sessions = {}
+
+# --- Edge TTS Voice Configuration ---
+DEFAULT_TTS_VOICE = "en-US-GuyNeural"  # Deep male voice
+AVAILABLE_TTS_VOICES = {
+    "guy": "en-US-GuyNeural",  # Deep male (default)
+    "davis": "en-US-DavisNeural",  # Deep male
+    "tony": "en-US-TonyNeural",  # Male
+    "jason": "en-US-JasonNeural",  # Male
+    "jenny": "en-US-JennyNeural",  # Female
+    "aria": "en-US-AriaNeural",  # Female
+    "sara": "en-US-SaraNeural",  # Female
+    "brian": "en-GB-RyanNeural",  # British male
+    "sonia": "en-GB-SoniaNeural",  # British female
+}
 
 # --- Daily Reminder Configuration ---
 JEE_MAINS_DATE = datetime(2026, 1, 22).date()
@@ -122,7 +135,7 @@ def load_config() -> dict:
         return {
             "reminder_time": "04:00", "moderation_enabled": True,
             "random_chat_config": {}, "ai_enabled_config": {},
-            "audio_mode_config": {}
+            "audio_mode_config": {}, "tts_voice_config": {}
         }
 
 def save_config(config: dict) -> None:
@@ -181,44 +194,37 @@ async def send_deletable_message(context: ContextTypes.DEFAULT_TYPE, chat_id: in
             return None # Indicate failure
 
 
-async def generate_audio_from_text(text: str) -> bytes | None:
-    if not REPLICATE_API_KEY:
-        logger.error("Replicate API key not configured. Cannot generate audio.")
+async def generate_audio_from_text(text: str, voice: str = DEFAULT_TTS_VOICE) -> bytes | None:
+    """Generate audio from text using Edge TTS (free and unlimited)."""
+    cleaned_text = re.sub(r'[*_`]', '', text)  # Remove markdown for cleaner TTS
+    if not cleaned_text.strip():
         return None
-    cleaned_text = re.sub(r'[*_`]', '', text) # Remove markdown for cleaner TTS
-    if not cleaned_text.strip(): return None
+    
     try:
-        logger.info("Generating audio with Replicate...")
-        input_params = {
-            "text": cleaned_text,
-            "emotion": "happy", # You could potentially vary this based on AI response sentiment
-            "voice_id": "Friendly_Person", # Or choose another voice
-            "language_boost": "English", # Adjust if needed
-            "english_normalization": True
-        }
-        # Replicate's run is blocking, use async_run for non-blocking if replicate library supports it well
-        # Note: Check replicate library documentation for best async practices. Using blocking run in thread for now.
-        output = await asyncio.to_thread(
-            replicate.run,
-            "minimax/speech-02-hd:408e2f3d6f1f0a149b5c777d8a0f5a7707e99741a4a15995f532b13c77e779a1", # Use full model identifier
-            input=input_params
-        )
-
-        if not output:
-            logger.error("Replicate API did not return output.")
-            return None
-        output_url = output # Assuming output is the URL directly
-
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.get(output_url)
-            if response.status_code == 200:
-                logger.info("Successfully generated and downloaded audio.")
-                return response.content
-            else:
-                logger.error(f"Failed to download audio from Replicate URL: Status {response.status_code}")
-                return None
+        logger.info(f"Generating audio with Edge TTS using voice: {voice}")
+        
+        # Create a temporary file to store the audio
+        temp_file = f"tts_temp_{id(text)}.mp3"
+        
+        # Generate TTS
+        communicate = edge_tts.Communicate(cleaned_text, voice)
+        await communicate.save(temp_file)
+        
+        # Read the generated file
+        with open(temp_file, 'rb') as f:
+            audio_bytes = f.read()
+        
+        # Clean up temp file
+        try:
+            os.remove(temp_file)
+        except:
+            pass
+        
+        logger.info(f"Successfully generated audio: {len(audio_bytes)} bytes")
+        return audio_bytes
+        
     except Exception as e:
-        logger.error(f"Failed to generate audio with Replicate: {e}")
+        logger.error(f"Failed to generate audio with Edge TTS: {e}")
         return None
 
 async def generate_video_from_text(prompt: str) -> bytes | None:
@@ -325,7 +331,9 @@ async def send_final_response(update: Update, context: ContextTypes.DEFAULT_TYPE
             await context.bot.edit_message_text("🎤 Generating audio...", chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
         except BadRequest: pass # Ignore if original message deleted
 
-        audio_bytes = await generate_audio_from_text(response_text)
+        # Get the configured voice for this chat
+        voice = config.get("tts_voice_config", {}).get(chat_id, DEFAULT_TTS_VOICE)
+        audio_bytes = await generate_audio_from_text(response_text, voice)
         if audio_bytes:
             try:
                 await context.bot.send_voice(chat_id=update.effective_chat.id, voice=audio_bytes)
@@ -1210,6 +1218,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`[Your question]` - Get AI answer (uses web search by default)\n\n"
         "**Other Commands**\n"
         "`/audio` - Toggle voice responses ON/OFF (Admin)\n"
+        "`/audio list` - Show available TTS voices\n"
+        "`/audio [voice]` - Set TTS voice (e.g., guy, davis, jenny)\n"
         "`/react` (Reply to msg) - Force AI reaction\n"
         "`/help` - Show this message\n"
         "`/chem [SMILES]` - Draw chemical structure\n"
@@ -1251,17 +1261,64 @@ async def force_react_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             # Don't send error message to user, just log
 
 async def toggle_audio_mode_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Toggle audio mode or change voice.
+    Usage: 
+        /audio - Toggle audio mode on/off
+        /audio <voice_name> - Set voice and enable audio mode
+        /audio list - Show available voices
+    """
     if not update.message: return
     if not await is_user_admin(update.message.chat_id, update.message.from_user.id, context):
          await update.message.reply_text("Only admins can toggle audio mode.")
          return
+    
     chat_id = str(update.message.chat_id)
     config = load_config()
+    
+    # Handle voice listing
+    if context.args and context.args[0].lower() == "list":
+        voice_list = "\n".join([f"• `{name}` - {voice}" for name, voice in AVAILABLE_TTS_VOICES.items()])
+        current_voice = config.get("tts_voice_config", {}).get(chat_id, DEFAULT_TTS_VOICE)
+        await update.message.reply_text(
+            f"**Available TTS Voices:**\n\n{voice_list}\n\n"
+            f"**Current voice:** `{current_voice}`\n\n"
+            f"Use `/audio <voice_name>` to change voice.",
+            parse_mode='Markdown'
+        )
+        return
+    
+    # Handle voice change
+    if context.args:
+        voice_name = context.args[0].lower()
+        if voice_name in AVAILABLE_TTS_VOICES:
+            selected_voice = AVAILABLE_TTS_VOICES[voice_name]
+            config.setdefault("tts_voice_config", {})[chat_id] = selected_voice
+            config.setdefault("audio_mode_config", {})[chat_id] = True
+            save_config(config)
+            await update.message.reply_text(
+                f"🎤 Voice set to **{voice_name}** (`{selected_voice}`) and audio mode enabled.",
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ Voice '{voice_name}' not found. Use `/audio list` to see available voices.",
+                parse_mode='Markdown'
+            )
+        return
+    
+    # Toggle audio mode
     is_enabled = config.setdefault("audio_mode_config", {}).get(chat_id, False)
     config["audio_mode_config"][chat_id] = not is_enabled
     save_config(config)
     status = "ON" if not is_enabled else "OFF"
-    await update.message.reply_text(f"🎤 Audio mode is now **{status}**.", parse_mode='Markdown')
+    current_voice = config.get("tts_voice_config", {}).get(chat_id, DEFAULT_TTS_VOICE)
+    await update.message.reply_text(
+        f"🎤 Audio mode is now **{status}**.\n"
+        f"Current voice: `{current_voice}`\n\n"
+        f"Use `/audio <voice>` to change voice or `/audio list` to see options.",
+        parse_mode='Markdown'
+    )
 
 # --- Other Command Handlers ---
 
