@@ -875,7 +875,7 @@ async def ask_next_trivia_question(context: ContextTypes.DEFAULT_TYPE, chat_id: 
     session["current_correct_index"] = correct_index # Store correct index for scoring
 
     try:
-        # Send the quiz poll - 60 second time limit
+        # Send the quiz poll - 45 second time limit
         poll_message = await context.bot.send_poll(
             chat_id=int(chat_id),
             question=f"Q{session['current_question_num']}/{session['total_questions']}: {question_text}",
@@ -883,7 +883,7 @@ async def ask_next_trivia_question(context: ContextTypes.DEFAULT_TYPE, chat_id: 
             type='quiz',
             correct_option_id=correct_index,
             is_anonymous=False, # Important for scoring
-            open_period=60 # Poll duration in seconds
+            open_period=45 # Poll duration in seconds
         )
         session["current_poll_id"] = poll_message.poll.id
         session["state"] = "polling" # Update state
@@ -892,7 +892,7 @@ async def ask_next_trivia_question(context: ContextTypes.DEFAULT_TYPE, chat_id: 
         if context.job_queue:
             context.job_queue.run_once(
                  process_poll_end_callback,
-                 62, # open_period + buffer
+                 47, # open_period + buffer
                  data={'chat_id': chat_id, 'expected_poll_id': poll_message.poll.id},
                  name=f"trivia_poll_end_{chat_id}_{poll_message.poll.id}"
              )
