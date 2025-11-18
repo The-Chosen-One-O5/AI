@@ -1,10 +1,3 @@
-"""
-Memory Manager Module
-=====================
-Manages long-term memory storage and retrieval using ChromaDB.
-Stores user facts and retrieves relevant context for conversations.
-"""
-
 import os
 import logging
 import hashlib
@@ -23,6 +16,7 @@ class MemoryManager:
         self.client = chromadb.PersistentClient(path=self.db_path)
         
         # Setup Embeddings: Use OpenAI if available, else default to local (free)
+        # This ensures it works even without paid keys
         if openai_api_key:
             self.embedding_fn = embedding_functions.OpenAIEmbeddingFunction(
                 api_key=openai_api_key,
@@ -49,9 +43,10 @@ class MemoryManager:
 
         try:
             # Create a unique ID for this memory to prevent duplicates
+            # Hashing the fact ensures we don't store "I like cats" twice for the same user
             fact_id = f"{user_id}_{hashlib.md5(fact.encode()).hexdigest()}"
             
-            # Check if already exists to avoid spamming logs
+            # Check if already exists
             existing = self.collection.get(ids=[fact_id])
             if existing and existing['ids']:
                 return
@@ -67,8 +62,7 @@ class MemoryManager:
 
     def get_relevant_memories(self, user_id: int, query_text: str, limit: int = 3) -> str:
         """
-        Find past memories relevant to the current topic.
-        Returns a formatted string of memories.
+        Find past memories relevant to the current topic (RAG).
         """
         try:
             results = self.collection.query(
