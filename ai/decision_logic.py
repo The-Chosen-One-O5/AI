@@ -1,9 +1,3 @@
-"""
-Decision Logic Module
-=====================
-Decides whether the bot should respond to a message and formats prompts.
-"""
-
 import json
 import logging
 import re
@@ -21,7 +15,7 @@ class DecisionEngine:
         history_text = "\n".join(recent_history[-5:]) # Last 5 messages
         
         return (
-            f"You are {self.bot_name}, a cool, witty group chat member (NOT a assistant). "
+            f"You are {self.bot_name}, a cool, witty group chat member (NOT an assistant). "
             "Decide if you should speak now based on the chat flow.\n\n"
             "**Rules for Speaking:**\n"
             "1. SPEAK IF: You are directly mentioned, asked a question, or have a burning witty comment.\n"
