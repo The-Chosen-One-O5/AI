@@ -12,3 +12,5 @@ rdkit
 replicate
 telegraph
 python-telegram-bot
+chromadb
+tiktoken
