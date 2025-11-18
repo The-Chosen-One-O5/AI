@@ -2,6 +2,7 @@ import logging
 import os
 import asyncio
 import json
+import random
 from collections import deque
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, PollAnswerHandler, filters, ContextTypes
@@ -14,6 +15,7 @@ from ai.api_client import APIClient
 from modules.trivia import TriviaManager
 from modules import tools
 from modules import admin
+from modules import media
 from modules.features import FeatureManager
 
 # --- Config ---
@@ -41,6 +43,7 @@ async def master_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     chat_id = str(update.effective_chat.id)
     user = update.effective_user
     text = update.message.text
+    text_lower = text.lower()
     
     # 1. Update History
     if chat_id not in chat_histories: chat_histories[chat_id] = deque(maxlen=15)
@@ -70,10 +73,68 @@ async def master_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             name=job_name
         )
 
-    # 5. "Should I Speak?" Logic
+    # 5. Natural Language Feature Triggers
+    
+    # Image Generation
+    if "generate image" in text_lower or "create image" in text_lower:
+        prompt = text_lower.replace("generate image", "").replace("create image", "").strip()
+        if prompt:
+            status_msg = await update.message.reply_text("🎨 Painting your imagination...")
+            try:
+                image_url = await media.generate_image_url(prompt)
+                if image_url:
+                    await update.message.reply_photo(photo=image_url, caption=f"🎨 {prompt}")
+                    await status_msg.delete()
+                else:
+                    await status_msg.edit_text("❌ Image generation failed.")
+            except Exception as e:
+                logger.error(f"Image generation error: {e}")
+                await status_msg.edit_text(f"❌ Error: {str(e)}")
+            return
+
+    # Video Generation
+    if "generate video" in text_lower or "create video" in text_lower:
+        prompt = text_lower.replace("generate video", "").replace("create video", "").strip()
+        if prompt:
+            status_msg = await update.message.reply_text("🎬 Directing scene (this may take a while)...")
+            try:
+                video_url = await media.generate_video_url(prompt)
+                if video_url:
+                    await update.message.reply_video(video=video_url, caption=f"🎬 {prompt}")
+                    await status_msg.delete()
+                else:
+                    await status_msg.edit_text("❌ Video generation failed.")
+            except Exception as e:
+                logger.error(f"Video generation error: {e}")
+                await status_msg.edit_text(f"❌ Error: {str(e)}")
+            return
+
+    # Vision (Explain this)
+    if ("explain this" in text_lower or "what is this" in text_lower) and update.message.reply_to_message and update.message.reply_to_message.photo:
+        status_msg = await update.message.reply_text("👀 Analyzing image...")
+        try:
+            photo = update.message.reply_to_message.photo[-1]
+            file = await context.bot.get_file(photo.file_id)
+            image_url = file.file_path
+            caption = await media.analyze_image_url(image_url)
+            if caption:
+                await update.message.reply_text(f"👀 I see: {caption}")
+                await status_msg.delete()
+            else:
+                 await status_msg.edit_text("❌ Could not analyze image.")
+        except Exception as e:
+            logger.error(f"Vision error: {e}")
+            await status_msg.edit_text(f"❌ Error: {str(e)}")
+        return
+
+    # 6. "Should I Speak?" Logic
     should_reply = False
     is_mention = f"@{context.bot.username}" in text or (update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id)
     
+    # Smart Mention: Check for name or "bot"
+    if "ai618" in text_lower or "bot" in text_lower:
+        is_mention = True
+
     if is_mention:
         should_reply = True
     else:
@@ -86,7 +147,7 @@ async def master_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         except:
             should_reply = False 
 
-    # 6. Generate Response
+    # 7. Generate Response
     if should_reply:
         await context.bot.send_chat_action(chat_id=chat_id, action="typing")
         
@@ -103,7 +164,7 @@ async def master_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         if response:
             await update.message.reply_text(response)
 
-    # 7. Learn Facts
+    # 8. Learn Facts
     if len(text.split()) > 4:
         fact_prompt = decision_engine.extract_fact_prompt(user.first_name, text)
         fact = await api_client.get_text_response([{"role": "user", "content": fact_prompt}])
@@ -118,6 +179,9 @@ def main():
     if not BOT_TOKEN:
         print("Error: BOT_TOKEN not found.")
         return
+    
+    if not os.environ.get('OPENAI_API_KEY'):
+        print("Warning: OPENAI_API_KEY not found. Memory and some features may not work.")
 
     app = Application.builder().token(BOT_TOKEN).build()
 
@@ -127,6 +191,13 @@ def main():
     # Tools
     app.add_handler(CommandHandler("chem", tools.handle_chemistry))
     app.add_handler(CommandHandler("tex", tools.handle_latex))
+    
+    # Media (Audio/Visual)
+    app.add_handler(CommandHandler("audio", media.handle_audio))
+    app.add_handler(CommandHandler("audioselect", media.handle_audioselect))
+    app.add_handler(CommandHandler("image", media.handle_image))
+    app.add_handler(CommandHandler("askit", media.handle_askit))
+    app.add_handler(CommandHandler("video", media.handle_video))
     
     # Features & Memory
     app.add_handler(CommandHandler("forget", lambda u, c: memory_manager.forget_user(u.effective_user.id)))
@@ -150,5 +221,4 @@ def main():
     app.run_polling()
 
 if __name__ == '__main__':
-    import random # Needed for the random timer
     main()

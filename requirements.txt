@@ -14,3 +14,4 @@ telegraph
 python-telegram-bot
 chromadb
 tiktoken
+bytez

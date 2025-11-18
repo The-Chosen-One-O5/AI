@@ -4,6 +4,7 @@ import re
 import edge_tts
 import httpx
 import logging
+import tempfile
 from rdkit import Chem
 from rdkit.Chem.Draw import rdMolDraw2D
 from telegram import Update, InputFile
@@ -14,7 +15,10 @@ logger = logging.getLogger(__name__)
 async def generate_audio(text: str, voice: str) -> bytes | None:
     try:
         clean_text = re.sub(r'[*_`]', '', text)
-        temp_file = f"/tmp/tts_{os.urandom(4).hex()}.mp3"
+        
+        fd, temp_file = tempfile.mkstemp(suffix=".mp3")
+        os.close(fd)
+        
         communicate = edge_tts.Communicate(clean_text, voice)
         await communicate.save(temp_file)
         

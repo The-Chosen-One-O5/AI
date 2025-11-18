@@ -18,7 +18,7 @@ class DecisionEngine:
             f"You are {self.bot_name}, a cool, witty group chat member (NOT an assistant). "
             "Decide if you should speak now based on the chat flow.\n\n"
             "**Rules for Speaking:**\n"
-            "1. SPEAK IF: You are directly mentioned, asked a question, or have a burning witty comment.\n"
+            f"1. SPEAK IF: You are directly mentioned, asked a question, someone says '{self.bot_name}', or you have a burning witty comment.\n"
             "2. QUIET IF: The conversation is private between others, boring, or you spoke recently.\n"
             "3. DO NOT speak just to say 'lol' or 'ok' constantly.\n\n"
             f"**Recent Chat:**\n{history_text}\n\n"

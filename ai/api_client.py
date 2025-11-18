@@ -51,7 +51,7 @@ class APIClient:
             def run_sync():
                 return client.chat.completions.create(
                     messages=messages,
-                    model="llama3.1-70b",
+                    model="zai-glm-4.6",
                     stream=False
                 )
             completion = await asyncio.to_thread(run_sync)
