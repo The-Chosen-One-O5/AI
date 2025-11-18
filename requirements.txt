@@ -11,7 +11,7 @@ pytz
 rdkit
 replicate
 telegraph
-python-telegram-bot
+python-telegram-bot[job-queue]
 chromadb
 tiktoken
 bytez

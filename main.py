@@ -59,19 +59,20 @@ async def master_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     # 4. Random Chat Scheduling
     # Every message resets the timer for a potential "random" comment from the bot
     # We use `run_once` to debounce it.
-    job_name = f"random_chat_{chat_id}"
-    current_jobs = context.job_queue.get_jobs_by_name(job_name)
-    for job in current_jobs: job.schedule_removal() # Cancel previous timer
-    
-    # Schedule new random chat in 10-30 minutes (simulating a lurker)
-    # Only if enabled
-    if feature_manager.random_chat_enabled:
-        context.job_queue.run_once(
-            feature_manager.random_chat_job, 
-            when=random.randint(600, 1800), 
-            data={'chat_id': chat_id, 'history': list(chat_histories[chat_id])},
-            name=job_name
-        )
+    if context.job_queue:  # Only if job_queue is available
+        job_name = f"random_chat_{chat_id}"
+        current_jobs = context.job_queue.get_jobs_by_name(job_name)
+        for job in current_jobs: job.schedule_removal() # Cancel previous timer
+        
+        # Schedule new random chat in 10-30 minutes (simulating a lurker)
+        # Only if enabled
+        if feature_manager.random_chat_enabled:
+            context.job_queue.run_once(
+                feature_manager.random_chat_job, 
+                when=random.randint(600, 1800), 
+                data={'chat_id': chat_id, 'history': list(chat_histories[chat_id])},
+                name=job_name
+            )
 
     # 5. Natural Language Feature Triggers
     
