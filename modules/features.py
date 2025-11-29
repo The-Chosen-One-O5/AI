@@ -10,6 +10,7 @@ class FeatureManager:
     def __init__(self, api_client):
         self.api_client = api_client
         self.random_chat_enabled = True
+        self.speak_mode_enabled = {}  # Per-user/chat speak mode state
 
     async def random_chat_job(self, context: ContextTypes.DEFAULT_TYPE):
         """Background job to send a random message."""
@@ -56,3 +57,20 @@ class FeatureManager:
         self.random_chat_enabled = not self.random_chat_enabled
         state = "ON" if self.random_chat_enabled else "OFF"
         await update.message.reply_text(f"🎲 Random Chat is now **{state}**.")
+
+    async def toggle_speak(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Toggle speak mode for the user."""
+        user_id = update.effective_user.id
+        current_state = self.speak_mode_enabled.get(user_id, False)
+        new_state = not current_state
+        self.speak_mode_enabled[user_id] = new_state
+        
+        state = "ON" if new_state else "OFF"
+        if new_state:
+            await update.message.reply_text(f"🎤 Speak Mode is now **{state}**. I will respond with audio messages only.")
+        else:
+            await update.message.reply_text(f"🎤 Speak Mode is now **{state}**. I will respond with text messages.")
+    
+    def is_speak_mode_enabled(self, user_id: int) -> bool:
+        """Check if speak mode is enabled for a user."""
+        return self.speak_mode_enabled.get(user_id, False)

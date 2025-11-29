@@ -25,10 +25,12 @@ A comprehensive AI-powered Telegram bot with trivia games, image/video generatio
 - **Molecular Structures**: SMILES to chemical structure images
 
 ### 🎤 Text-to-Speech
-- **Free & Unlimited**: Microsoft Edge TTS (no API costs)
+- **Free & Unlimited**: Microsoft Edge TTS (no API costs) or Premium TTS API
 - **Multiple Voices**: 9+ voice options including deep male and female voices
-- **Per-Chat Configuration**: Each chat can use a different voice
-- **High Quality**: Neural TTS with natural-sounding speech
+- **Speak Mode**: Toggle audio-only responses with `/speak` command - bot responds exclusively with audio messages
+- **Voice Selection**: Choose from 11+ premium voices with `/ttsvoice` (alloy, ash, ballad, coral, echo, fable, onyx, nova, sage, shimmer, verse)
+- **Per-User Configuration**: Individual voice preferences saved per user
+- **High Quality**: Neural TTS with natural-sounding speech and emotion support
 
 ### 🛡️ Moderation & Admin
 - **User Management**: Ban, mute, unmute users
@@ -151,9 +153,10 @@ The bot creates and manages these JSON files:
 /tex [LaTeX]           - Render LaTeX expression
 /summarize             - Summarize recent chat
 /studypoll "Q" "A1" .. - Create study poll (Admin)
-/audio                 - Toggle audio mode for AI responses (Free Edge TTS)
-/audio list            - Show available TTS voices
-/audio [voice]         - Set TTS voice (e.g., guy, davis, jenny)
+/audio                 - Generate audio from text (Edge TTS)
+/audioselect [voice]   - Select Edge TTS voice (guy, jenny, aria, brian, sonia)
+/speak                 - Toggle Speak Mode (AI responds ONLY with audio, no text)
+/ttsvoice [voice]      - Select TTS voice for Speak Mode (alloy, ash, ballad, coral, echo, fable, onyx, nova, sage, shimmer, verse)
 ```
 
 ### Memory Commands
