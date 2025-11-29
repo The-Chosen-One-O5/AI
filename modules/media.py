@@ -3,6 +3,7 @@ import logging
 import edge_tts
 import asyncio
 import tempfile
+import httpx
 from telegram import Update
 from telegram.ext import ContextTypes
 from bytez import Bytez
@@ -20,6 +21,13 @@ AVAILABLE_VOICES = {
     "brian": "en-GB-RyanNeural",
     "sonia": "en-GB-SoniaNeural"
 }
+
+# TTS API Configuration
+TTS_API_URL = os.environ.get("TTS_API_URL")
+TTS_API_KEY = os.environ.get("TTS_API_KEY")
+
+TTS_VOICES = ["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse"]
+user_tts_voices = {}  # Store TTS voice preference per user
 
 # --- Bytez Configuration ---
 def get_bytez_client():
@@ -48,6 +56,43 @@ async def generate_audio_file(text: str, voice: str) -> str:
     except Exception as e:
         logger.error(f"Audio generation error: {e}")
         raise e
+
+async def generate_tts_api_audio(text: str, voice: str = "ash", emotion: str = "energetic") -> bytes | None:
+    """Generates audio using the TTS API and returns the audio bytes."""
+    if not TTS_API_URL or not TTS_API_KEY:
+        logger.warning("TTS_API_URL or TTS_API_KEY not configured")
+        return None
+    
+    try:
+        headers = {
+            "Authorization": f"Bearer {TTS_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": "tts-1",
+            "input": text,
+            "voice": voice,
+            "prompt": f"{emotion}, expressive, warm",
+            "voice_metadata": {
+                "emotion": emotion,
+                "intensity": 5,
+                "pacing": "normal",
+                "vocal_traits": "expressive, warm"
+            }
+        }
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(TTS_API_URL, json=payload, headers=headers, timeout=60)
+            
+            if response.status_code == 200:
+                return response.content
+            else:
+                logger.warning(f"TTS API error: {response.status_code} - {response.text}")
+                return None
+    except Exception as e:
+        logger.error(f"TTS API generation error: {e}")
+        return None
 
 async def generate_image_url(prompt: str) -> str | None:
     """Generates an image and returns the URL."""
@@ -213,3 +258,41 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Video generation error: {e}")
         await status_msg.edit_text(f"❌ Error: {str(e)}")
+
+async def handle_tts_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Selects a TTS voice for speak mode."""
+    args = context.args
+    if not args:
+        voice_list = "\n".join([f"- `{v}`" for v in TTS_VOICES])
+        await update.message.reply_text(f"🎤 Available TTS voices:\n{voice_list}\n\nUsage: /ttsvoice <voice_name>")
+        return
+
+    voice_name = args[0].lower()
+    if voice_name in TTS_VOICES:
+        user_tts_voices[update.effective_user.id] = voice_name
+        await update.message.reply_text(f"🎤 TTS voice set to: **{voice_name.capitalize()}**")
+    else:
+        await update.message.reply_text(f"❌ Invalid voice name. Use /ttsvoice to see available options.")
+
+async def send_audio_response(text: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Helper function to send a response as audio."""
+    user_id = update.effective_user.id
+    voice = user_tts_voices.get(user_id, "ash")
+    
+    status_msg = await update.message.reply_text("🎤 Generating audio response...")
+    
+    try:
+        audio_bytes = await generate_tts_api_audio(text, voice=voice)
+        if audio_bytes:
+            await update.message.reply_audio(audio=audio_bytes, title="AI Response")
+            try:
+                await status_msg.delete()
+            except:
+                pass
+        else:
+            await status_msg.edit_text("❌ Failed to generate audio. Using text instead.")
+            await update.message.reply_text(text)
+    except Exception as e:
+        logger.error(f"Audio send error: {e}")
+        await status_msg.edit_text("❌ Error generating audio.")
+        await update.message.reply_text(text)

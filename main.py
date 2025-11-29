@@ -163,7 +163,10 @@ async def master_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         response = await api_client.get_text_response([{"role": "user", "content": system_prompt}])
         if response:
-            await update.message.reply_text(response)
+            if feature_manager.is_speak_mode_enabled(user.id):
+                await media.send_audio_response(response, update, context)
+            else:
+                await update.message.reply_text(response)
 
     # 8. Learn Facts
     if len(text.split()) > 4:
@@ -196,6 +199,7 @@ def main():
     # Media (Audio/Visual)
     app.add_handler(CommandHandler("audio", media.handle_audio))
     app.add_handler(CommandHandler("audioselect", media.handle_audioselect))
+    app.add_handler(CommandHandler("ttsvoice", media.handle_tts_voice))
     app.add_handler(CommandHandler("image", media.handle_image))
     app.add_handler(CommandHandler("askit", media.handle_askit))
     app.add_handler(CommandHandler("video", media.handle_video))
@@ -203,6 +207,7 @@ def main():
     # Features & Memory
     app.add_handler(CommandHandler("forget", lambda u, c: memory_manager.forget_user(u.effective_user.id)))
     app.add_handler(CommandHandler("random", feature_manager.toggle_random))
+    app.add_handler(CommandHandler("speak", feature_manager.toggle_speak))
     app.add_handler(CommandHandler("ai", trivia_command)) # Alias for now
     
     # Admin / Moderation
